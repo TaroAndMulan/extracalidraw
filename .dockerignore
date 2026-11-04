@@ -5,6 +5,8 @@
 !.npmrc
 !.prettierrc
 !excalidraw-app/
+!whiteboard-app/
+!whiteboard-server/
 !package.json
 !public/
 !packages/

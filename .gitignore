@@ -27,3 +27,7 @@ dev-dist
 html
 meta*.json
 .claude
+
+# self-hosted whiteboard secrets
+deploy/.env
+whiteboard-server/data

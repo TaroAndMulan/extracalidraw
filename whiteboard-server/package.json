@@ -1,0 +1,20 @@
+{
+  "name": "whiteboard-server",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Self-hosted Extracalidraw server: accounts, papers with multiple pages, real-time collaboration.",
+  "engines": {
+    "node": ">=18.18.0"
+  },
+  "scripts": {
+    "build": "node ./build.mjs",
+    "start": "node ./dist/server.mjs",
+    "dev": "node ./build.mjs && node --enable-source-maps ./dist/server.mjs"
+  },
+  "dependencies": {
+    "socket.io": "4.8.1"
+  },
+  "devDependencies": {
+    "@types/node": "^20"
+  }
+}

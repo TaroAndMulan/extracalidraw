@@ -37,6 +37,6 @@
       "@excalidraw/utils/*": ["./packages/utils/src/*"]
     }
   },
-  "include": ["packages", "excalidraw-app"],
+  "include": ["packages", "excalidraw-app", "whiteboard-app"],
   "exclude": ["examples", "dist", "types", "tests"]
 }

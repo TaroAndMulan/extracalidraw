@@ -1,0 +1,41 @@
+{
+  "name": "whiteboard-app",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Extracalidraw whiteboard: papers with multiple pages, accounts and live collaboration.",
+  "browserslist": {
+    "production": [
+      ">0.2%",
+      "not dead",
+      "not ie <= 11",
+      "not op_mini all",
+      "not safari < 12",
+      "not kaios <= 2.5",
+      "not edge < 79",
+      "not chrome < 70",
+      "not and_uc < 13",
+      "not samsung < 10"
+    ],
+    "development": [
+      "last 1 chrome version",
+      "last 1 firefox version",
+      "last 1 safari version"
+    ]
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "dependencies": {
+    "clsx": "1.1.1",
+    "idb-keyval": "6.0.3",
+    "lodash.throttle": "4.1.1",
+    "react": "19.0.0",
+    "react-dom": "19.0.0",
+    "socket.io-client": "4.7.2"
+  },
+  "scripts": {
+    "start": "vite",
+    "build": "vite build",
+    "preview": "vite preview --port 5002"
+  }
+}

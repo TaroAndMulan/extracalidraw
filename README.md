@@ -49,6 +49,12 @@
   </figure>
 </div>
 
+## Self-hosted whiteboard (this fork)
+
+This fork includes a self-hosted, multi-user whiteboard for classes, tutoring and teams: **papers with multiple pages**, **accounts managed by an admin**, **real-time collaboration** and **embedding on other websites**. One `docker compose up` on your own server, with automatic HTTPS.
+
+👉 See [WHITEBOARD.md](./WHITEBOARD.md) for features, setup and configuration.
+
 ## Features
 
 The Excalidraw editor (npm package) supports:

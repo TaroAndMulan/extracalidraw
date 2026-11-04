@@ -1,0 +1,51 @@
+# Self-hosted Extracalidraw whiteboard with automatic HTTPS (Caddy).
+#
+#   cp .env.example .env    # then edit DOMAIN and ADMIN_PASSWORD
+#   docker compose up -d --build
+#
+# See ../WHITEBOARD.md for details.
+
+services:
+  whiteboard:
+    build:
+      context: ..
+      dockerfile: whiteboard-server/Dockerfile
+    image: extracalidraw-whiteboard
+    restart: unless-stopped
+    environment:
+      APP_NAME: ${APP_NAME:-Extracalidraw}
+      ADMIN_USERNAME: ${ADMIN_USERNAME:-admin}
+      ADMIN_PASSWORD: ${ADMIN_PASSWORD:-}
+      RESET_ADMIN_PASSWORD: ${RESET_ADMIN_PASSWORD:-}
+      EMBED_ALLOWED_ORIGINS: ${EMBED_ALLOWED_ORIGINS:-*}
+      # Caddy sits in front of the server
+      TRUST_PROXY: "true"
+    volumes:
+      - whiteboard-data:/data
+    expose:
+      - "3002"
+    # Uncomment to also reach the server directly over plain HTTP
+    # (e.g. http://<vm-ip>:3002 for a quick LAN test, no HTTPS):
+    # ports:
+    #   - "3002:3002"
+
+  caddy:
+    image: caddy:2.8-alpine
+    restart: unless-stopped
+    depends_on:
+      - whiteboard
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"
+    environment:
+      DOMAIN: ${DOMAIN:?Set DOMAIN in deploy/.env (a domain name, or the VM's IP address)}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+      - caddy-config:/config
+
+volumes:
+  whiteboard-data:
+  caddy-data:
+  caddy-config:

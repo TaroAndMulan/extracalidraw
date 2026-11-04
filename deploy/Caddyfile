@@ -1,0 +1,10 @@
+# HTTPS is automatic:
+# - a domain name (e.g. board.example.com) gets a free Let's Encrypt
+#   certificate (ports 80 and 443 must be reachable from the internet)
+# - an IP address (e.g. 192.168.1.50) gets a certificate from Caddy's own
+#   local authority — browsers show a warning until you trust it
+{$DOMAIN} {
+	encode zstd gzip
+	# WebSockets (live collaboration) are proxied automatically
+	reverse_proxy whiteboard:3002
+}
