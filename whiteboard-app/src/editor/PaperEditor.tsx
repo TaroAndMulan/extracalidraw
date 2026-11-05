@@ -17,9 +17,17 @@ import {
   useSyncExternalStore,
 } from "react";
 
-import type { ExcalidrawImperativeAPI } from "@excalidraw/excalidraw/types";
+import type {
+  AppState,
+  BinaryFiles,
+  ExcalidrawImperativeAPI,
+} from "@excalidraw/excalidraw/types";
 
-import type { NonDeletedExcalidrawElement } from "@excalidraw/element/types";
+import type {
+  ExcalidrawImageElement,
+  NonDeletedExcalidrawElement,
+  OrderedExcalidrawElement,
+} from "@excalidraw/element/types";
 
 import { api } from "../api";
 import { ShareSettings } from "../components/ShareSettings";
@@ -40,6 +48,8 @@ import {
   unlockIcon,
 } from "./icons";
 import { LibraryIndexedDBAdapter } from "./library";
+import { getMathData, placeMath } from "./math";
+import { MathDialog } from "./MathDialog";
 import { importIntoPaper } from "./NewPageMenu";
 import { PAGES_SIDEBAR, PagesSidebar } from "./PagesSidebar";
 import { printAllPages } from "./print";
@@ -270,6 +280,10 @@ const EditorView = ({
 }) => {
   const { theme, preference, setPreference } = useTheme();
   const [sharing, setSharing] = useState(false);
+  /** the math editor: `{ element: null }` inserts a new formula */
+  const [mathEditor, setMathEditor] = useState<{
+    element: ExcalidrawImageElement | null;
+  } | null>(null);
   const [langCode, setLangCode] = useLangCode();
   const [excalidrawAPI, setExcalidrawAPI] =
     useState<ExcalidrawImperativeAPI | null>(null);
@@ -340,6 +354,10 @@ const EditorView = ({
         event.preventDefault();
         event.stopPropagation();
         session.goToRelativePage(event.key === "PageDown" ? 1 : -1);
+      } else if (event.code === "KeyM" && session.getState().canEdit) {
+        event.preventDefault();
+        event.stopPropagation();
+        setMathEditor({ element: null });
       } else if (event.code === "KeyN" && session.getState().canEdit) {
         event.preventDefault();
         event.stopPropagation();
@@ -414,6 +432,28 @@ const EditorView = ({
 
   const paperTitle = state.paper?.title ?? appName;
 
+  // double-clicking a formula (or Enter) edits it instead of cropping it
+  const onChange = useCallback(
+    (
+      elements: readonly OrderedExcalidrawElement[],
+      appState: AppState,
+      files: BinaryFiles,
+    ) => {
+      session.onEditorChange(elements, appState, files);
+      const croppingId = appState.croppingElementId;
+      if (croppingId && session.getState().canEdit) {
+        const element = elements.find((el) => el.id === croppingId);
+        if (getMathData(element) && apiRef.current) {
+          apiRef.current.updateScene({
+            appState: { croppingElementId: null },
+          });
+          setMathEditor({ element: element as ExcalidrawImageElement });
+        }
+      }
+    },
+    [session],
+  );
+
   // a frame around the canvas while following someone (e.g. the presenter)
   const followed = state.userToFollow;
   const isPresenter =
@@ -444,7 +484,7 @@ const EditorView = ({
         onExcalidrawAPI={onExcalidrawAPI}
         onInitialize={session.attach}
         initialData={initialData}
-        onChange={session.onEditorChange}
+        onChange={onChange}
         onPointerUpdate={session.onPointerUpdate}
         isCollaborating
         userToFollow={state.userToFollow}
@@ -473,7 +513,19 @@ const EditorView = ({
                 compact
               />
             ) : (
-              <StatusPills session={session} state={state} />
+              <>
+                {state.canEdit && (
+                  <button
+                    type="button"
+                    className="wb-pill wb-pill--button"
+                    onClick={() => setMathEditor({ element: null })}
+                    title="Insert a math formula (LaTeX) — Alt+M"
+                  >
+                    <span className="wb-pill__math">∑</span> Math
+                  </button>
+                )}
+                <StatusPills session={session} state={state} />
+              </>
             )}
             <Sidebar.Trigger
               name={PAGES_SIDEBAR}
@@ -523,6 +575,15 @@ const EditorView = ({
           >
             Print / PDF (all pages)
           </MainMenu.Item>
+          {state.canEdit && (
+            <MainMenu.Item
+              icon={<span className="wb-menu-math-icon">∑</span>}
+              onSelect={() => setMathEditor({ element: null })}
+              shortcut="Alt+M"
+            >
+              Insert math (LaTeX)
+            </MainMenu.Item>
+          )}
           <MainMenu.DefaultItems.SearchMenu />
           <MainMenu.DefaultItems.Help />
           {state.canEdit && <MainMenu.DefaultItems.ClearCanvas />}
@@ -558,6 +619,16 @@ const EditorView = ({
           }}
         />
       </Excalidraw>
+      {mathEditor && excalidrawAPI && (
+        <MathDialog
+          initial={getMathData(mathEditor.element)}
+          onClose={() => setMathEditor(null)}
+          onSubmit={(source, rendered) => {
+            placeMath(excalidrawAPI, source, rendered, mathEditor.element);
+            setMathEditor(null);
+          }}
+        />
+      )}
       {sharing && (
         <ShareDialog
           paperId={session.paperId}

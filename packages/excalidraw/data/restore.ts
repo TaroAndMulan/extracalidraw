@@ -57,6 +57,7 @@ import {
   normalizeStickyNote,
   normalizeStickyNoteBackgroundColor,
   normalizeStickyNoteFontSize,
+  normalizeColorRanges,
   normalizeStickyNoteStrokeColor,
 } from "@excalidraw/element";
 import { getBoundTextElement, getContainerElement } from "@excalidraw/element";
@@ -447,6 +448,18 @@ const repairBinding = <T extends ExcalidrawArrowElement>(
   return null;
 };
 
+const restoreColorRanges = (
+  element: ExcalidrawTextElement,
+  text: string,
+): { colorRanges?: ExcalidrawTextElement["colorRanges"] } => {
+  const colorRanges = normalizeColorRanges(
+    element.colorRanges,
+    (element.originalText || text).length,
+    element.strokeColor,
+  );
+  return colorRanges ? { colorRanges } : {};
+};
+
 const restoreElementWithProperties = <
   T extends Required<Omit<ExcalidrawElement, "customData">> & {
     customData?: ExcalidrawElement["customData"];
@@ -592,6 +605,8 @@ export const restoreElement = (
         baseFontSize: isFiniteNumber(element.baseFontSize)
           ? normalizeStickyNoteFontSize(element.baseFontSize)
           : null,
+        // partial text colors (only present when there are any)
+        ...restoreColorRanges(element, text),
       });
 
       // if empty text, mark as deleted. We keep in array

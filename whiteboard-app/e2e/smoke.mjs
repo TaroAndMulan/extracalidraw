@@ -6,8 +6,9 @@
  *   DATA_DIR=/tmp/wb ADMIN_PASSWORD=admin-pass yarn whiteboard:start
  *   node whiteboard-app/e2e/smoke.mjs http://localhost:3002 admin admin-pass
  *
- * Creates a member and a paper, then checks live sync, pages, templates, PDF
- * import, presenter mode, lock, guests (embed link) and offline edits.
+ * Creates a member and a paper, then checks live sync, partial text colors,
+ * LaTeX math, pages, templates, PDF import, presenter mode, lock, guests
+ * (embed link) and offline edits.
  * Needs Playwright's Chromium (`npx playwright install chromium`), or point
  * CHROMIUM_PATH at an installed Chrome/Chromium. Exits with 1 if any check
  * fails.
@@ -161,6 +162,54 @@ const run = async () => {
     await draw(maya, "o", 700, 350);
     let a = await until(admin, (s) => s.types.includes("ellipse"));
     check("admin sees the member's drawing", a.types.includes("ellipse"));
+
+    // partial text colors: color one word while editing
+    await admin.keyboard.press("t");
+    await admin.mouse.click(450, 520);
+    await admin.keyboard.type("Solve for x");
+    await admin.evaluate(() =>
+      document
+        .querySelector("textarea.excalidraw-wysiwyg")
+        .setSelectionRange(10, 11),
+    );
+    await admin.click('[data-testid="color-top-pick-#e03131"]');
+    await admin.keyboard.press("Escape");
+    const colored = await maya.waitForFunction(
+      () =>
+        window.__whiteboard.excalidrawAPI
+          .getSceneElements()
+          .find((e) => e.type === "text" && e.colorRanges?.length)
+          ?.colorRanges,
+      null,
+      { timeout: 8000 },
+    ).then((handle) => handle.jsonValue()).catch(() => null);
+    check(
+      "a word colored separately reaches the member",
+      colored?.[0]?.start === 10 && colored?.[0]?.end === 11,
+      JSON.stringify(colored),
+    );
+
+    // LaTeX math
+    await admin.keyboard.press("Alt+m");
+    await admin.click(".wb-math__example");
+    await admin.waitForSelector(".wb-math__preview img", { timeout: 15000 });
+    await admin.click("button:has-text('Insert')");
+    const math = await maya.waitForFunction(
+      () => {
+        const { excalidrawAPI } = window.__whiteboard;
+        const element = excalidrawAPI
+          .getSceneElements()
+          .find((e) => e.customData?.whiteboardMath);
+        return element?.status === "saved" &&
+          excalidrawAPI.getFiles()[element.fileId]
+          ? element.customData.whiteboardMath.latex
+          : null;
+      },
+      null,
+      { timeout: 10000 },
+    ).then((handle) => handle.jsonValue()).catch(() => null);
+    check("a LaTeX formula reaches the member", !!math, String(math));
+    await admin.keyboard.press("Escape");
 
     // pages are separate
     await admin.keyboard.press("Alt+n");

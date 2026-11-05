@@ -15,6 +15,7 @@ import {
 import { pointFrom, type Radians } from "@excalidraw/math";
 
 import {
+  shiftColorRanges,
   DEFAULT_BOUND_TEXT_LABEL_POSITION,
   fixBindingsAfterDeletion,
   getActiveTextElement,
@@ -222,6 +223,17 @@ export class AppText {
           if (_element.id === latestTextElement.id && isTextElement(_element)) {
             return newElementWith(_element, {
               originalText: nextOriginalText,
+              // partial colors move along with the edit
+              ...(_element.colorRanges
+                ? {
+                    colorRanges:
+                      shiftColorRanges(
+                        _element.colorRanges,
+                        _element.originalText,
+                        nextOriginalText,
+                      ) ?? [],
+                  }
+                : {}),
               isDeleted: isDeleted ?? _element.isDeleted,
               ...(stickyLayout?.text ??
                 // returns (wrapped) text and new dimensions

@@ -59,6 +59,7 @@ import {
   getBoundTextMaxWidth,
 } from "./textElement";
 import { getLineHeightInPx } from "./textMeasurements";
+import { getColoredTextLines } from "./textColorRanges";
 import {
   isTextElement,
   isLinearElement,
@@ -703,12 +704,41 @@ const drawElementOnCanvas = (
             lineHeightPx,
           );
 
+          // partially colored text is drawn segment by segment (RTL text
+          // keeps one color: segment order wouldn't match the visual order)
+          const coloredLines = rtl ? null : getColoredTextLines(element);
+
           for (let index = 0; index < lines.length; index++) {
-            context.fillText(
-              lines[index],
-              horizontalOffset,
-              index * lineHeightPx + verticalOffset,
-            );
+            const y = index * lineHeightPx + verticalOffset;
+            const segments = coloredLines?.[index];
+            if (
+              segments?.some((segment) => segment.color !== element.strokeColor)
+            ) {
+              const lineWidth = context.measureText(lines[index]).width;
+              let x =
+                horizontalOffset -
+                (element.textAlign === "center"
+                  ? lineWidth / 2
+                  : element.textAlign === "right"
+                  ? lineWidth
+                  : 0);
+              context.textAlign = "left";
+              for (const segment of segments) {
+                context.fillStyle = applyDarkModeFilter(
+                  segment.color,
+                  renderConfig.theme === THEME.DARK,
+                );
+                context.fillText(segment.text, x, y);
+                x += context.measureText(segment.text).width;
+              }
+              context.textAlign = element.textAlign as CanvasTextAlign;
+              context.fillStyle = applyDarkModeFilter(
+                element.strokeColor,
+                renderConfig.theme === THEME.DARK,
+              );
+            } else {
+              context.fillText(lines[index], horizontalOffset, y);
+            }
           }
         });
         if (shouldTemporarilyAttach) {

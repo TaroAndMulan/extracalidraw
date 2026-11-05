@@ -37,10 +37,13 @@ With `localStorage.setItem("whiteboard-debug", "1")` the editor exposes `window.
 - **Dev mode is stricter**: Excalidraw validates fractional indices and throws in development; run the smoke test against the dev server too after touching element handling.
 - **Docker builds in sandboxes with a TLS-intercepting proxy** fail at `yarn install` (self-signed certificate). That's the environment, not the Dockerfile; build with the proxy CA mounted as a secret only for testing.
 - The server serves `index.html` with `X-Frame-Options: SAMEORIGIN` except under `/embed/`, which uses `frame-ancestors $EMBED_ALLOWED_ORIGINS`.
+- **Double-click / Enter on an image starts cropping** in Excalidraw. Formulas are detected in `onChange` (`appState.croppingElementId`), cropping is cancelled and the math editor opens instead.
+- **Partial text colors while editing** are drawn by `.excalidraw-wysiwyg-colors` behind the textarea; its layout must match the textarea exactly (styles are copied in `updateColorLayer`).
+- **Browser tests on a reused paper** can read leftovers from earlier runs (same text, same place) — create a fresh paper per test.
 
 ## Conventions
 
 - Server code is plain TypeScript bundled by `whiteboard-server/build.mjs` (esbuild) into `dist/server.mjs` with no runtime dependencies.
-- App code imports the Excalidraw packages from source via Vite aliases (same as `excalidraw-app`). Don't modify `packages/` unless unavoidable.
+- App code imports the Excalidraw packages from source via Vite aliases (same as `excalidraw-app`). Don't modify `packages/` unless unavoidable — and list every such change in `decisions.md` → "Changes to packages/".
 - Shared types live in `whiteboard-server/src/protocol.ts` and are imported by the app with `import type` only.
 - Keep user-facing docs (`WHITEBOARD.md`) and these notes up to date.

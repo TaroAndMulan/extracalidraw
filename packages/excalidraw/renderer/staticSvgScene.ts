@@ -26,6 +26,7 @@ import {
 import { LinearElementEditor } from "@excalidraw/element";
 import { getBoundTextElement, getContainerElement } from "@excalidraw/element";
 import { getLineHeightInPx } from "@excalidraw/element";
+import { getColoredTextLines } from "@excalidraw/element";
 import {
   isArrowElement,
   isIframeLikeElement,
@@ -816,9 +817,33 @@ const renderElementToSvg = (
             : element.textAlign === "right" || direction === "rtl"
             ? "end"
             : "start";
+        // partially colored text: one <tspan> per colored segment
+        const coloredLines =
+          direction === "rtl" ? null : getColoredTextLines(element);
         for (let i = 0; i < lines.length; i++) {
           const text = svgRoot.ownerDocument.createElementNS(SVG_NS, "text");
-          text.textContent = lines[i];
+          const segments = coloredLines?.[i];
+          if (
+            segments?.some((segment) => segment.color !== element.strokeColor)
+          ) {
+            for (const segment of segments) {
+              const tspan = svgRoot.ownerDocument.createElementNS(
+                SVG_NS,
+                "tspan",
+              );
+              tspan.textContent = segment.text;
+              tspan.setAttribute(
+                "fill",
+                applyDarkModeFilter(
+                  segment.color,
+                  renderConfig.theme === THEME.DARK,
+                ),
+              );
+              text.appendChild(tspan);
+            }
+          } else {
+            text.textContent = lines[i];
+          }
           text.setAttribute("x", `${horizontalOffset}`);
           text.setAttribute("y", `${i * lineHeightPx + verticalOffset}`);
           text.setAttribute("font-family", getFontFamilyString(element));

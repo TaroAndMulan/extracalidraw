@@ -506,6 +506,7 @@ export const textWysiwyg = ({
         ),
         opacity: updatedTextElement.opacity / 100,
       });
+      updateColorLayer(updatedTextElement);
       currentTextLayout = {
         angle: angle as Radians,
         font,
@@ -566,6 +567,93 @@ export const textWysiwyg = ({
     overflowWrap: "break-word",
     boxSizing: "content-box",
   });
+  // Partially colored text (`colorRanges`): a textarea can't show colors, so
+  // a copy of the text with the same layout is shown behind it, and the
+  // textarea's own text is made transparent (its caret and selection stay).
+  const colorLayer = ownerDocument.createElement("div");
+  colorLayer.className = "excalidraw-wysiwyg-colors";
+  colorLayer.setAttribute("aria-hidden", "true");
+  let isColorLayerShown = false;
+
+  function updateColorLayer(textElement: ExcalidrawTextElement) {
+    const ranges = textElement.colorRanges;
+    if (!ranges?.length) {
+      if (isColorLayerShown) {
+        colorLayer.remove();
+        isColorLayerShown = false;
+        editable.style.caretColor = "";
+        editable.classList.remove("excalidraw-wysiwyg--colored");
+      }
+      return;
+    }
+    const isDark = app.state.theme === THEME.DARK;
+    const defaultColor = applyDarkModeFilter(textElement.strokeColor, isDark);
+    const style = editable.style;
+    Object.assign(colorLayer.style, {
+      position: "absolute",
+      display: "inline-block",
+      margin: 0,
+      padding: 0,
+      border: 0,
+      boxSizing: "content-box",
+      overflow: "hidden",
+      overflowWrap: "break-word",
+      pointerEvents: "none",
+      background: "transparent",
+      backfaceVisibility: "hidden",
+      zIndex: style.zIndex,
+      font: style.font,
+      lineHeight: style.lineHeight,
+      fontFamily: style.fontFamily,
+      width: style.width,
+      height: style.height,
+      left: style.left,
+      top: style.top,
+      transformOrigin: style.transformOrigin,
+      transform: style.transform,
+      textAlign: style.textAlign,
+      opacity: style.opacity,
+      whiteSpace: style.whiteSpace,
+      wordBreak: style.wordBreak,
+    });
+    colorLayer.dir = editable.dir;
+
+    const value = editable.value;
+    const nodes: Node[] = [];
+    const pushSegment = (text: string, color: string) => {
+      if (text) {
+        const span = ownerDocument.createElement("span");
+        span.textContent = text;
+        span.style.color = color;
+        nodes.push(span);
+      }
+    };
+    let position = 0;
+    for (const range of ranges) {
+      const start = Math.max(position, range.start);
+      pushSegment(value.slice(position, start), defaultColor);
+      pushSegment(
+        value.slice(start, range.end),
+        applyDarkModeFilter(range.color, isDark),
+      );
+      position = Math.max(position, range.end);
+    }
+    pushSegment(value.slice(position), defaultColor);
+    // a trailing line break only takes up a line when something follows it
+    if (!value || value.endsWith("\n")) {
+      nodes.push(ownerDocument.createTextNode("\u200b"));
+    }
+    colorLayer.replaceChildren(...nodes);
+
+    if (!isColorLayerShown && editable.parentNode) {
+      editable.before(colorLayer);
+      isColorLayerShown = true;
+    }
+    style.color = "transparent";
+    style.caretColor = defaultColor;
+    editable.classList.add("excalidraw-wysiwyg--colored");
+  }
+
   editable.value = element.originalText;
   updateWysiwygStyle();
 
@@ -1113,6 +1201,7 @@ export const textWysiwyg = ({
     editorBox?.style.removeProperty("left");
     editorBox?.style.removeProperty("right");
 
+    colorLayer.remove();
     editable.remove();
   };
 
@@ -1328,6 +1417,11 @@ export const textWysiwyg = ({
   });
   ownerWindow.addEventListener("beforeunload", handleSubmit);
   editorBox!.appendChild(editable);
+  // the text may already have colored parts (needs the textarea mounted)
+  const mountedTextElement = app.scene.getElement(element.id);
+  if (mountedTextElement && isTextElement(mountedTextElement)) {
+    updateColorLayer(mountedTextElement);
+  }
 
   return handleSubmit;
 };

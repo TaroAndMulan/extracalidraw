@@ -52,6 +52,7 @@ All ids are validated (`/^[A-Za-z0-9_-]{1,128}$/`) before touching the file syst
 | `editor/PagesSidebar.tsx`, `NewPageMenu.tsx` | Pages panel (thumbnails, drag & drop, menus) and the "New page" menu (templates, import). |
 | `editor/files.ts` | Image upload/download (`FileSync`). |
 | `editor/importPages.ts`, `templates.ts` | PDF (pdf.js, lazy) / image import and paper templates → pages with a locked background image. |
+| `editor/math.ts`, `MathDialog.tsx` | LaTeX → SVG (MathJax, lazy) and placing/updating formulas; the math editor dialog. Double-click/Enter on a formula is intercepted in `PaperEditor` (`croppingElementId`). |
 | `editor/thumbnails.ts`, `print.ts` | Page previews; print/PDF of all pages. |
 | `editor/EmbedPage.tsx` | `/embed/<id>#token=…`: checks the link, asks guests for a name, opens the editor. |
 

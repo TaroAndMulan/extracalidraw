@@ -820,6 +820,12 @@ body.excalidraw-cursor-resize * {
   }
 
   input[type="text"],
+  // partially colored text being edited: the colors are shown by a layer
+  // behind the textarea (see textWysiwyg), keep selected text see-through
+  textarea.excalidraw-wysiwyg--colored::selection {
+    color: transparent;
+  }
+
   textarea:not(.excalidraw-wysiwyg) {
     color: var(--text-primary-color);
     border: 1.5px solid var(--input-border-color);

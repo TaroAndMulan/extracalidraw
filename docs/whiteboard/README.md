@@ -20,6 +20,7 @@ Everything below is implemented, tested and pushed on branch `claude/tender-bell
 - **Pages**: add (blank / lined / grid / dotted / from PDF or images), rename, reorder by drag & drop, duplicate, delete (owner/admin only); pages panel with live thumbnails; page bar; keyboard shortcuts.
 - **Real-time**: drawing, cursors, laser, selections; presence per page; follow a person; **presenter mode** (everyone follows); **bring everyone here**; **lock** (view-only for everyone but the owner/admins); offline edits are sent after reconnecting.
 - **Embeds**: per-paper public link (`/embed/<id>#token=…`), view or edit, guests join without an account, reset/disable link, `EMBED_ALLOWED_ORIGINS`.
+- **LaTeX math** (MathJax → SVG image, editable via double-click) and **partially colored text** (color selected words; a small, self-contained change to the editor core).
 - **Images**, export of the current page, **Print/PDF of all pages**.
 - **Deployment**: single Docker image (Node only) + Caddy for HTTPS (`deploy/`). Tested with Docker, Compose and Caddy.
 
@@ -33,7 +34,7 @@ WHITEBOARD.md        user documentation
 docs/whiteboard/     these notes
 ```
 
-The original `excalidraw-app/` (excalidraw.com) is **untouched**; nothing in `packages/` was modified either, which keeps merging upstream Excalidraw easy.
+The original `excalidraw-app/` (excalidraw.com) is **untouched**. `packages/` has one deliberate addition — partially colored text — kept small and documented in [decisions.md](./decisions.md#changes-to-packages) so upstream merges stay easy.
 
 ## Everyday commands
 

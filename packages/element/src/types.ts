@@ -288,7 +288,22 @@ export type ExcalidrawTextElement = _ExcalidrawElementBase &
      * so it survives midpoint insertion and other geometry changes.
      * */
     labelPosition?: number | null;
+    /**
+     * Parts of `originalText` drawn in a color other than `strokeColor`
+     * (sorted, non-overlapping). Absent when the whole text has one color.
+     * See `textColorRanges.ts`.
+     */
+    colorRanges?: readonly TextColorRange[];
   }>;
+
+/** a part of a text element's `originalText` drawn in its own color */
+export type TextColorRange = Readonly<{
+  /** index into `originalText` (inclusive) */
+  start: number;
+  /** index into `originalText` (exclusive) */
+  end: number;
+  color: string;
+}>;
 
 export type ExcalidrawBindableElement =
   | ExcalidrawRectangleElement

@@ -8,6 +8,8 @@ This fork adds a self-hosted, multi-user whiteboard built on the Excalidraw edit
 - **Accounts**: you are the admin and create an account for each person. Papers are shared with the people you pick; they only see what's shared with them.
 - **Run the session**: _Present_ makes everyone follow your view and page while you teach, _Bring everyone here_ moves everybody to your page once, _Lock_ makes the paper view-only for everyone but you, and clicking a person's avatar follows their view (across pages).
 - **Embed on other websites**: turn on a paper's public link and paste the `<iframe>` code into any page — visitors join live without an account.
+- **LaTeX math**: insert formulas (_∑ Math_ or <kbd>Alt</kbd>+<kbd>M</kbd>) with a live preview and buttons for common structures and symbols; double-click a formula to edit it.
+- **Colored words**: while editing a text, select part of it and pick a color — only those words change color.
 - **Images**, export of a page as PNG/SVG/`.excalidraw`, and **Print / PDF of all pages**.
 - **Fast**: a single small Node.js process keeps open papers in memory and sends only what changed; the app is served compressed and cached.
 
@@ -68,7 +70,9 @@ location / {
 2. **Create a paper** — _Papers_ → _New paper_, pick who it's shared with. `⋯` on a paper lets you rename it, change who it's shared with, set up the public link/embed, duplicate it (great for reusable worksheets/templates) or delete it.
 3. **Pages** — the page bar at the bottom (`‹ Page 2 / 5 › +`) and the _Pages_ panel (top right; pin it to keep it open). _New page ▾_ offers blank, lined, grid and dotted paper, and **Import PDF or images…** (or drop a PDF onto the canvas). Imported backgrounds are locked; right-click → _Unlock_ to move them. Everyone who can draw may add, rename and reorder pages; only the owner and admins delete them.
 4. **Run a session** — top right: _Present_ (everyone follows your view and page until you stop; anyone can step out with ✕ on the “… is presenting” badge), _Lock_ (view-only for everyone else), and in the _Pages_ panel _Bring everyone here_. Click someone's avatar to follow them.
-5. **Print / PDF** — menu (☰) → _Print / PDF (all pages)_; choose “Save as PDF” in the print dialog.
+5. **Math** — _∑ Math_ (top right), <kbd>Alt</kbd>+<kbd>M</kbd> or menu → _Insert math (LaTeX)_. Type LaTeX (e.g. `\frac{a}{b}`, `x^2`, `\sqrt{x}`) or use the buttons, pick a color and size, then _Insert_ (<kbd>Ctrl</kbd>+<kbd>Enter</kbd>). Double-click a formula (or select it and press <kbd>Enter</kbd>) to change it. Chemistry works too: `\ce{H2O}`.
+6. **Color part of a text** — double-click a text to edit it, select the words, then click a color in the panel on the left. Picking the text's own color removes the coloring. New text you type continues the color of the character before it.
+7. **Print / PDF** — menu (☰) → _Print / PDF (all pages)_; choose “Save as PDF” in the print dialog.
 
 Each person's own preferences (theme, language, shape library) stay in their browser.
 

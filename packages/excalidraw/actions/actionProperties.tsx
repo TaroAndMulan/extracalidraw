@@ -43,6 +43,7 @@ import {
 import { LinearElementEditor } from "@excalidraw/element";
 
 import { newElementWith } from "@excalidraw/element";
+import { applyColorRange } from "@excalidraw/element";
 import { getArrowheadForPicker } from "@excalidraw/element";
 
 import {
@@ -363,13 +364,76 @@ const changeFontSize = (
 
 // -----------------------------------------------------------------------------
 
+/**
+ * While a text is being edited with part of it selected, a color applies to
+ * that part only (see `colorRanges` on text elements). With all of it
+ * selected, the partial colors are dropped and the whole text is colored as
+ * usual (`wholeText`). Returns `null` when neither applies.
+ */
+const colorSelectedText = (
+  elements: readonly ExcalidrawElement[],
+  appState: Readonly<AppState>,
+  color: string,
+  app: AppClassProperties,
+) => {
+  const editingId = appState.editingTextElement?.id;
+  if (!editingId) {
+    return null;
+  }
+  const textarea =
+    app.excalidrawContainerValue?.container?.querySelector<HTMLTextAreaElement>(
+      "textarea.excalidraw-wysiwyg",
+    );
+  if (!textarea || textarea.selectionStart === textarea.selectionEnd) {
+    return null;
+  }
+  const element = elements.find((el) => el.id === editingId);
+  if (!element || !isTextElement(element) || element.isDeleted) {
+    return null;
+  }
+  // all of the text selected: color the whole element as usual
+  if (
+    Math.min(textarea.selectionStart, textarea.selectionEnd) <= 0 &&
+    Math.max(textarea.selectionStart, textarea.selectionEnd) >=
+      element.originalText.length
+  ) {
+    return element.colorRanges
+      ? {
+          wholeText: true,
+          elements: elements.map((el) =>
+            el.id === element.id
+              ? // an empty list (not `undefined`, which newElementWith ignores)
+                newElementWith(element, { colorRanges: [] })
+              : el,
+          ),
+        }
+      : null;
+  }
+  const colorRanges = applyColorRange(
+    element.colorRanges,
+    textarea.selectionStart,
+    textarea.selectionEnd,
+    color,
+    element.strokeColor,
+    element.originalText.length,
+  );
+  return {
+    wholeText: false,
+    elements: elements.map((el) =>
+      el.id === element.id
+        ? newElementWith(element, { colorRanges: colorRanges ?? [] })
+        : el,
+    ),
+  };
+};
+
 export const actionChangeStrokeColor = register<
   Partial<AppState> & { color?: string }
 >({
   name: "changeStrokeColor",
   label: "labels.stroke",
   trackEvent: false,
-  perform: (elements, appState, value) => {
+  perform: (elements, appState, value, app) => {
     const { color, ...appStateUpdates } = value ?? {};
     if (color === undefined) {
       return {
@@ -377,6 +441,19 @@ export const actionChangeStrokeColor = register<
         captureUpdate: CaptureUpdateAction.EVENTUALLY,
       };
     }
+    // coloring the selected words of the text being edited
+    const coloredText = colorSelectedText(elements, appState, color, app);
+    if (coloredText && !coloredText.wholeText) {
+      return {
+        elements: coloredText.elements,
+        appState: { ...appState, ...appStateUpdates },
+        captureUpdate: CaptureUpdateAction.IMMEDIATELY,
+      };
+    }
+    if (coloredText?.wholeText) {
+      elements = coloredText.elements as typeof elements;
+    }
+
     // resolved from the state the action runs against — never from the
     // render-time closure of the memoized picker (see `resolveColorTarget`)
     const target = resolveColorTarget(appState, elements, "strokeColor");

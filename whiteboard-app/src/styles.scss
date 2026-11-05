@@ -1329,3 +1329,135 @@ a {
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+
+// math (LaTeX) editor
+.wb-math {
+  display: flex;
+  flex-direction: column;
+  gap: 0.6rem;
+
+  &__palette {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px;
+
+    button {
+      min-width: 34px;
+      height: 32px;
+      padding: 0 0.4rem;
+      font: inherit;
+      font-size: 0.95rem;
+      border: 1px solid var(--wb-border);
+      border-radius: 6px;
+      background: var(--wb-surface);
+      color: var(--wb-text);
+      cursor: pointer;
+
+      &:hover {
+        background: var(--wb-surface-2);
+        border-color: var(--wb-primary);
+      }
+    }
+  }
+
+  &__input {
+    width: 100%;
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    font-size: 0.95rem;
+    color: var(--wb-text);
+    background: var(--wb-surface);
+    border: 1px solid var(--wb-border);
+    border-radius: 8px;
+    padding: 0.55rem 0.7rem;
+    resize: vertical;
+    outline: none;
+
+    &:focus {
+      border-color: var(--wb-primary);
+      box-shadow: 0 0 0 3px var(--wb-primary-soft);
+    }
+  }
+
+  &__preview {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    min-height: 110px;
+    max-height: 260px;
+    overflow: auto;
+    padding: 0.75rem;
+    border-radius: 8px;
+    border: 1px dashed var(--wb-border);
+    // formulas are previewed as on the (light) board
+    background: #ffffff;
+
+    img {
+      max-width: 100%;
+    }
+  }
+
+  &__error {
+    color: #c92a2a;
+    font-size: 0.9rem;
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  }
+
+  &__example {
+    font: inherit;
+    border: none;
+    background: none;
+    color: #6965db;
+    cursor: pointer;
+    text-decoration: underline;
+  }
+
+  &__options {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 0.75rem;
+  }
+
+  &__colors {
+    display: flex;
+    gap: 6px;
+
+    button {
+      width: 24px;
+      height: 24px;
+      border-radius: 6px;
+      border: 2px solid transparent;
+      cursor: pointer;
+      box-shadow: 0 0 0 1px var(--wb-border);
+
+      &.is-active {
+        border-color: var(--wb-surface);
+        box-shadow: 0 0 0 2px var(--wb-primary);
+      }
+    }
+  }
+
+  &__display {
+    display: flex;
+    align-items: center;
+    gap: 0.35rem;
+    font-size: 0.9rem;
+    cursor: pointer;
+
+    input {
+      accent-color: var(--wb-primary);
+    }
+  }
+
+  &__hint {
+    margin-right: auto;
+    align-self: center;
+  }
+}
+
+.wb-pill__math,
+.wb-menu-math-icon {
+  font-family: "Times New Roman", serif;
+  font-size: 1.15rem;
+  line-height: 1;
+}

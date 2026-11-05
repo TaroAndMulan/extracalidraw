@@ -37,6 +37,6 @@ yarn fix             # Auto-fix formatting and linting issues
 
 This fork adds a self-hosted multi-user whiteboard (accounts, papers with pages, real-time collaboration, embeds):
 
-- **Code**: `whiteboard-server/` (Node.js server), `whiteboard-app/` (React app using `packages/excalidraw`), `deploy/` (Docker Compose + Caddy). `excalidraw-app/` and `packages/` are unchanged by it.
+- **Code**: `whiteboard-server/` (Node.js server), `whiteboard-app/` (React app using `packages/excalidraw`), `deploy/` (Docker Compose + Caddy). `excalidraw-app/` is unchanged; `packages/` only gained partial text colors (`colorRanges`, see `docs/whiteboard/decisions.md` → "Changes to packages/").
 - **Read first**: [`docs/whiteboard/README.md`](./docs/whiteboard/README.md) (architecture, protocol, testing, decisions). User docs: [`WHITEBOARD.md`](./WHITEBOARD.md).
 - **Checks**: `yarn vitest run whiteboard-server` (server unit + integration tests), `yarn test:typecheck` (also runs `tsc -p whiteboard-server`), and the browser smoke test `yarn whiteboard:e2e <url> <admin> <password>` against a running server.
