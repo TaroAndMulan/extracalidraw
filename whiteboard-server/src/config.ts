@@ -29,6 +29,8 @@ export const config = {
   adminUsername: env.ADMIN_USERNAME || "admin",
   /** password of the admin account created on first start */
   adminPassword: env.ADMIN_PASSWORD || "",
+  /** reset the admin's password to `adminPassword` on start */
+  resetAdminPassword: bool(env.RESET_ADMIN_PASSWORD, false),
   /**
    * "auto" sets the Secure cookie flag when the request came over HTTPS
    * (directly or via a trusted reverse proxy)

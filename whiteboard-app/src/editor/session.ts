@@ -13,6 +13,7 @@
 
 import {
   CaptureUpdateAction,
+  getCommonBounds,
   getSceneVersion,
   getVisibleSceneBounds,
   isInvisiblySmallElement,
@@ -45,12 +46,16 @@ import type {
 } from "@excalidraw/element/types";
 
 import { FileSync } from "./files";
+import { createBackgroundElements } from "./importPages";
+
+import type { BackgroundPage } from "./importPages";
 
 import type {
   JoinPaperResult,
   PageMeta,
   PaperSummary,
   GuestIdentity,
+  Presenter,
   PresenceUser,
   SceneBounds,
   ClientToServerEvents,
@@ -86,6 +91,8 @@ export interface SessionState {
   removedReason: string | null;
   /** joined through a public link, without an account */
   isGuest: boolean;
+  /** presenter mode: everyone follows this person */
+  presenter: Presenter | null;
 }
 
 /** deleted elements are synced for a day so others learn about deletions */
@@ -198,7 +205,10 @@ export class PaperSession {
     followers: 0,
     removedReason: null,
     isGuest: false,
+    presenter: null,
   };
+  /** the user stopped following the current presenter themselves */
+  private presenterOptOut = false;
   private listeners = new Set<() => void>();
   /** bumped whenever page contents change, for thumbnails */
   private contentListeners = new Set<(pageId: string) => void>();
@@ -358,6 +368,9 @@ export class PaperSession {
         this.setState({ paper: { ...this.state.paper, locked, title } });
       }
     });
+    socket.on("paper:presenter", ({ presenter }) =>
+      this.applyPresenter(presenter),
+    );
     socket.on("paper:removed", ({ reason }) => {
       this.setState({ removedReason: reason });
       socket.disconnect();
@@ -445,6 +458,7 @@ export class PaperSession {
       isGuest: data.isGuest,
     });
     this.setPresence(data.presence);
+    this.applyPresenter(data.presenter);
     if (currentPageId) {
       this.socket?.emit("paper:presence", { pageId: currentPageId });
       this.opts.onPageChange?.(currentPageId);
@@ -479,6 +493,7 @@ export class PaperSession {
       canEdit: data.canEdit,
     });
     this.setPresence(data.presence);
+    this.applyPresenter(data.presenter);
 
     if (offlinePages.length && this.state.canEdit) {
       socket.emit("paper:pages", { pages: offlinePages });
@@ -529,6 +544,15 @@ export class PaperSession {
       api.onUserFollow((payload) => this.onUserFollow(payload)),
       () => relay.cancel(),
     );
+    // ask whoever we follow (e.g. the presenter) for their current view, as
+    // it may have been sent before the editor was ready
+    const followed = this.state.userToFollow;
+    if (followed) {
+      this.socket?.emit("paper:follow", {
+        socketId: followed.socketId,
+        action: "FOLLOW",
+      });
+    }
   };
 
   private detach() {
@@ -794,14 +818,18 @@ export class PaperSession {
   }
 
   /** creates a page after `afterPageId` (default: the current page) */
-  addPage(afterPageId = this.state.currentPageId, elements?: Elements) {
+  addPage(
+    afterPageId = this.state.currentPageId,
+    elements?: Elements,
+    opts: { name?: string; switchTo?: boolean } = {},
+  ) {
     const pages = this.state.pages;
     const index = pages.findIndex((page) => page.id === afterPageId);
     const before = index >= 0 ? pages[index] : pages[pages.length - 1];
     const after = index >= 0 ? pages[index + 1] : undefined;
     const page: PageMeta = {
       id: randomId(),
-      name: "",
+      name: (opts.name ?? "").slice(0, 120),
       index: indexBetween(
         before?.index ?? null,
         after?.index ?? null,
@@ -817,7 +845,33 @@ export class PaperSession {
       this.pageElements.set(page.id, elements);
       this.sendChangedElements(page.id, elements);
     }
-    this.switchPage(page.id);
+    if (opts.switchTo !== false) {
+      this.switchPage(page.id);
+    }
+    return page;
+  }
+
+  /**
+   * adds a page whose background is a locked image (PDF page, image,
+   * template); the image is uploaded right away so others see it too
+   */
+  addBackgroundPage(
+    background: BackgroundPage,
+    opts: { afterPageId?: string | null; switchTo?: boolean } = {},
+  ) {
+    if (!this.api) {
+      return null;
+    }
+    this.api.addFiles([background.file]);
+    const elements = createBackgroundElements(background);
+    const page = this.addPage(
+      opts.afterPageId === undefined
+        ? this.state.currentPageId
+        : opts.afterPageId,
+      elements,
+      { name: background.name, switchTo: opts.switchTo },
+    );
+    this.files.sync(elements);
     return page;
   }
 
@@ -829,14 +883,10 @@ export class PaperSession {
       type: "everything",
       elements: source,
     });
-    const page = this.addPage(
-      pageId,
-      restoreElements(duplicatedElements, null),
-    );
     const sourceMeta = this.pageMetas.get(pageId);
-    if (sourceMeta?.name) {
-      this.renamePage(page.id, `${sourceMeta.name} (copy)`);
-    }
+    this.addPage(pageId, restoreElements(duplicatedElements, null), {
+      name: sourceMeta?.name ? `${sourceMeta.name} (copy)` : "",
+    });
   }
 
   renamePage(pageId: string, name: string) {
@@ -948,10 +998,16 @@ export class PaperSession {
     if (!viewport) {
       const visible = elements.filter((element) => !element.isDeleted);
       if (visible.length) {
-        api.setViewport({
-          target: visible,
-          fit: "scale-down",
-          animation: false,
+        // not `api.setViewport()`: the editor treats that as taking over the
+        // view and would stop following the presenter
+        api.updateScene({
+          appState: zoomToFitBounds({
+            appState: api.getAppState(),
+            bounds: getCommonBounds(visible),
+            fit: "scale-down",
+            // keep clear of the toolbars & sidebar
+            canvasOffsets: api.getViewportOffsets(),
+          }).appState,
         });
       }
     }
@@ -1057,6 +1113,18 @@ export class PaperSession {
 
   private onUserFollow(payload: OnUserFollowedPayload) {
     const prev = this.state.userToFollow;
+    // following someone else, or stopping to follow the presenter, opts out
+    // of presenter mode until the next presentation
+    const presenter = this.state.presenter;
+    if (presenter && presenter.socketId !== this.state.socketId) {
+      const isPresenter = payload.userToFollow.socketId === presenter.socketId;
+      if (
+        (payload.action === "UNFOLLOW" && isPresenter) ||
+        (payload.action === "FOLLOW" && !isPresenter)
+      ) {
+        this.presenterOptOut = true;
+      }
+    }
     if (payload.action === "FOLLOW") {
       if (prev && prev.socketId !== payload.userToFollow.socketId) {
         this.socket?.emit("paper:follow", {
@@ -1101,6 +1169,36 @@ export class PaperSession {
       pageId,
       bounds: getVisibleSceneBounds(this.api.getAppState()) as SceneBounds,
     });
+  }
+
+  private applyPresenter(presenter: Presenter | null) {
+    const prev = this.state.presenter;
+    if (prev?.socketId !== presenter?.socketId) {
+      this.presenterOptOut = false;
+    }
+    this.setState({ presenter });
+    const following = this.state.userToFollow;
+    if (presenter && presenter.socketId !== this.state.socketId) {
+      if (!this.presenterOptOut && following?.socketId !== presenter.socketId) {
+        this.onUserFollow({
+          userToFollow: {
+            socketId: presenter.socketId as SocketId,
+            username: presenter.name,
+          },
+          action: "FOLLOW",
+        });
+      }
+    } else if (!presenter && prev && following?.socketId === prev.socketId) {
+      this.onUserFollow({ userToFollow: following, action: "UNFOLLOW" });
+      this.toast(`${prev.name} stopped presenting`);
+    }
+  }
+
+  /** presenter mode: everyone follows your view and page */
+  setPresenting(on: boolean) {
+    if (this.state.canManage) {
+      this.socket?.emit("paper:present", { on });
+    }
   }
 
   /** brings everyone in the paper to the current page & viewport */

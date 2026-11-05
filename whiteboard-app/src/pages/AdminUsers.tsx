@@ -54,6 +54,227 @@ const CredentialsNote = ({
   );
 };
 
+/** a username from a name, e.g. "Maya Chen" → "maya.chen" */
+const toUsername = (name: string) =>
+  name
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, ".")
+    .replace(/^\.+|\.+$/g, "")
+    .slice(0, 28);
+
+const randomDigits = () =>
+  String(1000 + (window.crypto.getRandomValues(new Uint16Array(1))[0] % 9000));
+
+type BulkResult = {
+  name: string;
+  username: string;
+  password: string;
+  error: string | null;
+};
+
+const toCSV = (rows: BulkResult[]) =>
+  [
+    "name,username,password",
+    ...rows
+      .filter((row) => !row.error)
+      .map((row) =>
+        [row.name, row.username, row.password]
+          .map((value) => `"${value.replace(/"/g, '""')}"`)
+          .join(","),
+      ),
+  ].join("\n");
+
+const BulkCreateDialog = ({
+  existingUsernames,
+  onClose,
+  onCreated,
+}: {
+  existingUsernames: string[];
+  onClose: () => void;
+  onCreated: () => void;
+}) => {
+  const [text, setText] = useState("");
+  const [role, setRole] = useState<Role>("member");
+  const [progress, setProgress] = useState<string | null>(null);
+  const [results, setResults] = useState<BulkResult[] | null>(null);
+  const [copied, setCopied] = useState(false);
+
+  const entries = text
+    .split("\n")
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .map((line) => {
+      const [name, username] = line.split(",").map((part) => part.trim());
+      return { name, username: username || "" };
+    });
+
+  const create = async () => {
+    const taken = new Set(existingUsernames.map((name) => name.toLowerCase()));
+    const created: BulkResult[] = [];
+    for (const [index, entry] of entries.entries()) {
+      setProgress(`Creating ${index + 1} of ${entries.length}…`);
+      let username = entry.username || toUsername(entry.name);
+      if (username.length < 2) {
+        // e.g. names written in non-latin scripts
+        username = `user-${randomDigits()}`;
+      }
+      if (!entry.username) {
+        const base = username;
+        for (let n = 2; taken.has(username.toLowerCase()); n++) {
+          username = `${base}${n}`;
+        }
+      }
+      const password = generatePassword();
+      try {
+        await api.createUser({
+          username,
+          displayName: entry.name,
+          password,
+          role,
+        });
+        taken.add(username.toLowerCase());
+        created.push({ name: entry.name, username, password, error: null });
+      } catch (error: any) {
+        created.push({
+          name: entry.name,
+          username,
+          password: "",
+          error: error.message,
+        });
+      }
+    }
+    setProgress(null);
+    setResults(created);
+    onCreated();
+  };
+
+  if (results) {
+    const ok = results.filter((row) => !row.error);
+    const summary = ok
+      .map((row) => `${row.name}: ${row.username} / ${row.password}`)
+      .join("\n");
+    return (
+      <Modal
+        title={`Created ${ok.length} accounts`}
+        onClose={onClose}
+        width={560}
+      >
+        <p>
+          Send each person their username and password (sign in at{" "}
+          <strong>{window.location.origin}</strong>). Passwords aren't shown
+          again, but you can reset them any time.
+        </p>
+        <div className="wb-table-wrap wb-bulk-results">
+          <table className="wb-table">
+            <thead>
+              <tr>
+                <th>Name</th>
+                <th>Username</th>
+                <th>Password</th>
+              </tr>
+            </thead>
+            <tbody>
+              {results.map((row, index) => (
+                <tr key={index}>
+                  <td>{row.name}</td>
+                  <td className="wb-mono">{row.username}</td>
+                  <td className="wb-mono">
+                    {row.error ? (
+                      <span className="wb-text-danger">{row.error}</span>
+                    ) : (
+                      row.password
+                    )}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+        <div className="wb-modal__actions">
+          <Button
+            onClick={() => {
+              const blob = new Blob([toCSV(results)], { type: "text/csv" });
+              const link = document.createElement("a");
+              link.href = URL.createObjectURL(blob);
+              link.download = "accounts.csv";
+              link.click();
+              URL.revokeObjectURL(link.href);
+            }}
+          >
+            Download CSV
+          </Button>
+          <Button
+            onClick={async () => {
+              try {
+                await navigator.clipboard.writeText(summary);
+                setCopied(true);
+              } catch {
+                setCopied(false);
+              }
+            }}
+          >
+            {copied ? "Copied ✓" : "Copy all"}
+          </Button>
+          <Button variant="primary" onClick={onClose}>
+            Done
+          </Button>
+        </div>
+      </Modal>
+    );
+  }
+
+  return (
+    <Modal title="Add many people" onClose={onClose} width={520}>
+      <Field
+        label="Names, one per line"
+        hint={
+          <>
+            Optionally add a username after a comma, e.g.{" "}
+            <code>Maya Chen, maya</code>. Usernames and passwords are generated
+            for you.
+          </>
+        }
+      >
+        <textarea
+          className="wb-textarea"
+          rows={8}
+          value={text}
+          placeholder={"Maya Chen\nOmar Haddad\nSam Lee, sam"}
+          onChange={(event) => setText(event.target.value)}
+          disabled={!!progress}
+        />
+      </Field>
+      <Field label="Role">
+        <select
+          value={role}
+          onChange={(event) => setRole(event.target.value as Role)}
+          disabled={!!progress}
+        >
+          <option value="member">Member</option>
+          <option value="admin">Admin</option>
+        </select>
+      </Field>
+      <div className="wb-modal__actions">
+        <Button onClick={onClose} disabled={!!progress}>
+          Cancel
+        </Button>
+        <Button
+          variant="primary"
+          disabled={!entries.length || !!progress}
+          onClick={create}
+        >
+          {progress ??
+            `Create ${entries.length || ""} ${
+              entries.length === 1 ? "account" : "accounts"
+            }`}
+        </Button>
+      </div>
+    </Modal>
+  );
+};
+
 const CreateUserDialog = ({
   onClose,
   onCreated,
@@ -317,6 +538,7 @@ export const AdminUsers = () => {
   const [users, setUsers] = useState<PublicUser[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [creating, setCreating] = useState(false);
+  const [bulkCreating, setBulkCreating] = useState(false);
   const [editing, setEditing] = useState<PublicUser | null>(null);
   const [deleting, setDeleting] = useState<PublicUser | null>(null);
   const [query, setQuery] = useState("");
@@ -354,6 +576,7 @@ export const AdminUsers = () => {
               onChange={(event) => setQuery(event.target.value)}
             />
           )}
+          <Button onClick={() => setBulkCreating(true)}>Add many…</Button>
           <Button variant="primary" onClick={() => setCreating(true)}>
             + Add person
           </Button>
@@ -459,6 +682,13 @@ export const AdminUsers = () => {
         )}
       </main>
 
+      {bulkCreating && (
+        <BulkCreateDialog
+          existingUsernames={(users ?? []).map((user) => user.username)}
+          onClose={() => setBulkCreating(false)}
+          onCreated={load}
+        />
+      )}
       {creating && (
         <CreateUserDialog onClose={() => setCreating(false)} onCreated={load} />
       )}

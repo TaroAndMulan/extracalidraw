@@ -15,6 +15,7 @@ import type { Config } from "./config";
 import type {
   ClientToServerEvents,
   JoinPaperResult,
+  Presenter,
   PageMeta,
   PaperSummary,
   PresenceUser,
@@ -123,6 +124,8 @@ export class LivePaper {
   lastActiveAt = Date.now();
   lastChangedAt = 0;
   disposed = false;
+  /** presenter mode: everyone follows this socket */
+  presenter: Presenter | null = null;
 
   private dirtyPages = new Set<string>();
   private pagesDirty = false;
@@ -568,6 +571,12 @@ export class PaperHub {
     if (live) {
       live.members.delete(socket.id);
       live.lastActiveAt = Date.now();
+      if (live.presenter?.socketId === socket.id) {
+        live.presenter = null;
+        this.io
+          .to(paperRoom(paperId))
+          .emit("paper:presenter", { presenter: null });
+      }
       this.broadcastPresence(paperId);
     }
   }
@@ -693,6 +702,7 @@ export class PaperHub {
           canManage: permissions.canManage,
           canEdit: permissions.canEdit,
           isGuest: actor.kind === "guest",
+          presenter: live.presenter,
         };
         ack({ ok: true, data: result });
         this.broadcastPresence(paper.id);
@@ -898,6 +908,24 @@ export class PaperHub {
       if (paper) {
         this.onPaperUpdated(paper);
       }
+    });
+
+    socket.on("paper:present", (data) => {
+      const ctx = this.getContext(socket);
+      if (!ctx || !ctx.canManage || typeof data?.on !== "boolean") {
+        return;
+      }
+      const presenter = data.on
+        ? { socketId: socket.id, name: ctx.name }
+        : null;
+      // only the current presenter can stop presenting
+      if (!data.on && ctx.live.presenter?.socketId !== socket.id) {
+        return;
+      }
+      ctx.live.presenter = presenter;
+      this.io
+        .to(paperRoom(ctx.paper.id))
+        .emit("paper:presenter", { presenter });
     });
 
     socket.on("disconnecting", () => {

@@ -92,6 +92,13 @@ export interface JoinPaperResult {
   canEdit: boolean;
   /** joined through a public link, without an account */
   isGuest: boolean;
+  /** someone everyone follows (presenter mode) */
+  presenter: Presenter | null;
+}
+
+export interface Presenter {
+  socketId: string;
+  name: string;
 }
 
 export interface GuestIdentity {
@@ -143,6 +150,8 @@ export interface ClientToServerEvents {
     bounds: SceneBounds | null;
   }) => void;
   "paper:lock": (data: { locked: boolean }) => void;
+  /** start/stop presenting: everyone follows the presenter's view & page */
+  "paper:present": (data: { on: boolean }) => void;
 }
 
 export interface ServerToClientEvents {
@@ -171,6 +180,7 @@ export interface ServerToClientEvents {
     by: string;
   }) => void;
   "paper:settings": (data: { locked: boolean; title: string }) => void;
+  "paper:presenter": (data: { presenter: Presenter | null }) => void;
   /** the paper was deleted or the user lost access to it */
   "paper:removed": (data: { reason: string }) => void;
 }

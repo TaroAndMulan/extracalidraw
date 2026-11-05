@@ -73,3 +73,11 @@ export const shareIcon = icon(
     <path d="M8.7 10.7l6.6-3.4M8.7 13.3l6.6 3.4" />
   </>,
 );
+
+export const presentIcon = icon(
+  <>
+    <rect x="3" y="4" width="18" height="12" rx="2" />
+    <path d="M12 16v4M8 20h8" />
+    <path d="M10 8l4 2l-4 2z" />
+  </>,
+);

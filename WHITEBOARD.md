@@ -3,9 +3,10 @@
 This fork adds a self-hosted, multi-user whiteboard built on the Excalidraw editor — for classes, tutoring, or your team.
 
 - **Papers with pages** (like Bitpaper): create as many papers as you like, each with as many pages as you need. Add, rename, reorder (drag & drop), duplicate and delete pages; switch with the page bar, the pages panel (with live thumbnails) or <kbd>Alt</kbd>+<kbd>PageUp</kbd>/<kbd>PageDown</kbd> (<kbd>Alt</kbd>+<kbd>N</kbd> adds a page).
+- **Worksheets & paper**: import a **PDF** (each page becomes a page) or images, or add **lined, grid or dotted** pages. The background is locked so everyone writes on top of it.
 - **Real-time collaboration**: everyone sees drawings, cursors, laser pointer and selections live. The pages panel shows who is on which page.
 - **Accounts**: you are the admin and create an account for each person. Papers are shared with the people you pick; they only see what's shared with them.
-- **Run the session**: _Bring everyone here_ moves everybody to your page and view, _Lock_ makes the paper view-only for everyone but you, and clicking a person's avatar follows their view (across pages).
+- **Run the session**: _Present_ makes everyone follow your view and page while you teach, _Bring everyone here_ moves everybody to your page once, _Lock_ makes the paper view-only for everyone but you, and clicking a person's avatar follows their view (across pages).
 - **Embed on other websites**: turn on a paper's public link and paste the `<iframe>` code into any page — visitors join live without an account.
 - **Images**, export of a page as PNG/SVG/`.excalidraw`, and **Print / PDF of all pages**.
 - **Fast**: a single small Node.js process keeps open papers in memory and sends only what changed; the app is served compressed and cached.
@@ -63,10 +64,10 @@ location / {
 
 ## Using it
 
-1. **Add people** — _People_ → _Add person_. A password is generated for you (or type one); copy the sign-in details and send them. Admins can reset passwords, disable or delete accounts any time.
+1. **Add people** — _People_ → _Add person_, or _Add many…_ to paste a list of names (one per line) and get usernames and passwords for everyone (copy or download as CSV). Admins can reset passwords, disable or delete accounts any time.
 2. **Create a paper** — _Papers_ → _New paper_, pick who it's shared with. `⋯` on a paper lets you rename it, change who it's shared with, set up the public link/embed, duplicate it (great for reusable worksheets/templates) or delete it.
-3. **Pages** — the page bar at the bottom (`‹ Page 2 / 5 › +`) and the _Pages_ panel (top right; pin it to keep it open). Everyone who can draw may add, rename and reorder pages; only the owner and admins delete them.
-4. **Run a session** — top right: _Lock_ (view-only for everyone else), and in the _Pages_ panel _Bring everyone here_. Click someone's avatar to follow them.
+3. **Pages** — the page bar at the bottom (`‹ Page 2 / 5 › +`) and the _Pages_ panel (top right; pin it to keep it open). _New page ▾_ offers blank, lined, grid and dotted paper, and **Import PDF or images…** (or drop a PDF onto the canvas). Imported backgrounds are locked; right-click → _Unlock_ to move them. Everyone who can draw may add, rename and reorder pages; only the owner and admins delete them.
+4. **Run a session** — top right: _Present_ (everyone follows your view and page until you stop; anyone can step out with ✕ on the “… is presenting” badge), _Lock_ (view-only for everyone else), and in the _Pages_ panel _Bring everyone here_. Click someone's avatar to follow them.
 5. **Print / PDF** — menu (☰) → _Print / PDF (all pages)_; choose “Save as PDF” in the print dialog.
 
 Each person's own preferences (theme, language, shape library) stay in their browser.
@@ -161,7 +162,7 @@ cd deploy && docker compose up -d --build
 
 ## Without Docker
 
-Requires Node.js 18+ and Yarn 1.
+Requires Node.js 20+ and Yarn 1.
 
 ```bash
 yarn install
@@ -200,3 +201,7 @@ browser ──HTTPS──▶ Caddy ──▶ whiteboard-server (Node.js, one pro
 - **Browser warns about the certificate** — expected when `DOMAIN` is an IP address; use a domain name for a trusted certificate.
 - **An embed shows “refused to connect”** — the site isn't listed in `EMBED_ALLOWED_ORIGINS`, or the page isn't served over HTTPS.
 - Logs: `docker compose logs -f whiteboard`.
+
+---
+
+Developer notes (architecture, protocol, tests): [`docs/whiteboard/`](./docs/whiteboard/README.md).

@@ -6,6 +6,7 @@ import { useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { Avatar } from "../components/ui";
 
 import { magnetIcon, plusIcon } from "./icons";
+import { NewPageMenu } from "./NewPageMenu";
 import { getPageLabel } from "./session";
 
 import type { PaperSession, SessionState } from "./session";
@@ -301,16 +302,7 @@ export const PagesSidebar = ({
         </div>
       </Sidebar.Header>
       <div className="wb-pages__actions">
-        {state.canEdit && (
-          <button
-            type="button"
-            className="wb-pages__action"
-            onClick={() => session.addPage()}
-            title="Add a page after the current one (Alt+N)"
-          >
-            {plusIcon} New page
-          </button>
-        )}
+        {state.canEdit && <NewPageMenu session={session} />}
         {state.canManage && (
           <button
             type="button"

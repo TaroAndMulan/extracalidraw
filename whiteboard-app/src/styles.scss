@@ -1275,3 +1275,57 @@ a {
     resize: none;
   }
 }
+
+// new page menu (templates, import)
+.wb-newpage {
+  position: relative;
+
+  &__menu {
+    left: 0;
+    right: auto;
+    min-width: 210px;
+  }
+}
+
+.wb-page-menu__separator {
+  height: 1px;
+  margin: 0.25rem 0.4rem;
+  background: var(--default-border-color, #e5e5e5);
+}
+
+.wb-page-menu__hint {
+  float: right;
+  color: var(--color-gray-50, #999);
+  font-size: 0.75rem;
+}
+
+.wb-textarea {
+  width: 100%;
+  font: inherit;
+  font-size: 0.95rem;
+  color: var(--wb-text);
+  background: var(--wb-surface);
+  border: 1px solid var(--wb-border);
+  border-radius: 8px;
+  padding: 0.55rem 0.7rem;
+  resize: vertical;
+  outline: none;
+
+  &:focus {
+    border-color: var(--wb-primary);
+    box-shadow: 0 0 0 3px var(--wb-primary-soft);
+  }
+}
+
+.wb-bulk-results {
+  max-height: 320px;
+  overflow-y: auto;
+}
+
+.wb-follow-label {
+  display: block;
+  max-width: 220px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}

@@ -32,3 +32,11 @@ yarn fix             # Auto-fix formatting and linting issues
 - Internal packages use path aliases (see `vitest.config.mts`)
 - Build system uses esbuild for packages, Vite for the app
 - TypeScript throughout with strict configuration
+
+## Self-hosted whiteboard (this fork)
+
+This fork adds a self-hosted multi-user whiteboard (accounts, papers with pages, real-time collaboration, embeds):
+
+- **Code**: `whiteboard-server/` (Node.js server), `whiteboard-app/` (React app using `packages/excalidraw`), `deploy/` (Docker Compose + Caddy). `excalidraw-app/` and `packages/` are unchanged by it.
+- **Read first**: [`docs/whiteboard/README.md`](./docs/whiteboard/README.md) (architecture, protocol, testing, decisions). User docs: [`WHITEBOARD.md`](./WHITEBOARD.md).
+- **Checks**: `yarn vitest run whiteboard-server` (server unit + integration tests), `yarn test:typecheck` (also runs `tsc -p whiteboard-server`), and the browser smoke test `yarn whiteboard:e2e <url> <admin> <password>` against a running server.

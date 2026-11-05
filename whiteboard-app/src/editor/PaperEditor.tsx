@@ -11,6 +11,7 @@ import clsx from "clsx";
 import {
   useCallback,
   useEffect,
+  useMemo,
   useRef,
   useState,
   useSyncExternalStore,
@@ -33,11 +34,13 @@ import {
   lockIcon,
   pagesIcon,
   plusIcon,
+  presentIcon,
   printIcon,
   shareIcon,
   unlockIcon,
 } from "./icons";
 import { LibraryIndexedDBAdapter } from "./library";
+import { importIntoPaper } from "./NewPageMenu";
 import { PAGES_SIDEBAR, PagesSidebar } from "./PagesSidebar";
 import { printAllPages } from "./print";
 import { PaperSession, getPageLabel } from "./session";
@@ -225,6 +228,27 @@ const StatusPills = ({
         </span>
       )
     )}
+    {state.canManage && (
+      <button
+        type="button"
+        className={clsx("wb-pill wb-pill--button", {
+          "wb-pill--active": state.presenter?.socketId === state.socketId,
+        })}
+        onClick={() =>
+          session.setPresenting(state.presenter?.socketId !== state.socketId)
+        }
+        title={
+          state.presenter?.socketId === state.socketId
+            ? "Everyone follows your view and page. Click to stop."
+            : "Present: everyone follows your view and page"
+        }
+      >
+        {presentIcon}
+        {state.presenter?.socketId === state.socketId
+          ? "Presenting"
+          : "Present"}
+      </button>
+    )}
     {state.followers > 0 && (
       <span className="wb-pill" title="People following your view">
         👁 {state.followers}
@@ -276,6 +300,29 @@ const EditorView = ({
   }, [session, excalidrawAPI]);
 
   useHandleLibrary({ excalidrawAPI, adapter: LibraryIndexedDBAdapter });
+
+  // dropping a PDF on the canvas imports it as pages (images are inserted
+  // by the editor as usual)
+  const containerRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    const container = containerRef.current;
+    if (!container) {
+      return;
+    }
+    const onDrop = (event: DragEvent) => {
+      const pdfs = [...(event.dataTransfer?.files ?? [])].filter(
+        (file) => file.type === "application/pdf" || /\.pdf$/i.test(file.name),
+      );
+      if (!pdfs.length || !session.getState().canEdit) {
+        return;
+      }
+      event.preventDefault();
+      event.stopPropagation();
+      importIntoPaper(session, pdfs);
+    };
+    container.addEventListener("drop", onDrop, true);
+    return () => container.removeEventListener("drop", onDrop, true);
+  }, [session]);
 
   // keyboard shortcuts for pages
   useEffect(() => {
@@ -367,8 +414,32 @@ const EditorView = ({
 
   const paperTitle = state.paper?.title ?? appName;
 
+  // a frame around the canvas while following someone (e.g. the presenter)
+  const followed = state.userToFollow;
+  const isPresenter =
+    !!followed && state.presenter?.socketId === followed.socketId;
+  const viewportStatusFrame = useMemo(
+    () =>
+      followed
+        ? {
+            border: "var(--color-primary-hover)",
+            label: {
+              label: (
+                <span className="wb-follow-label" title={followed.username}>
+                  {isPresenter
+                    ? `${followed.username} is presenting`
+                    : `Following ${followed.username}`}
+                </span>
+              ),
+              onClose: () => session.follow(null),
+            },
+          }
+        : null,
+    [followed, isPresenter, session],
+  );
+
   return (
-    <div className="wb-editor">
+    <div className="wb-editor" ref={containerRef}>
       <Excalidraw
         onExcalidrawAPI={onExcalidrawAPI}
         onInitialize={session.attach}
@@ -377,6 +448,7 @@ const EditorView = ({
         onPointerUpdate={session.onPointerUpdate}
         isCollaborating
         userToFollow={state.userToFollow}
+        viewportStatusFrame={viewportStatusFrame}
         viewModeEnabled={!state.canEdit}
         theme={theme}
         onThemeChange={(next) => setPreference(next)}
