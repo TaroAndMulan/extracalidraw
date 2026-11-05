@@ -7,7 +7,9 @@
  * order, everyone converges to the same state regardless of message order.
  */
 
-import type { PageMeta, SyncedElement } from "./protocol";
+import { PATCHABLE_KEYS } from "./protocol";
+
+import type { ElementPatch, PageMeta, SyncedElement } from "./protocol";
 
 type Versioned = { version: number; versionNonce: number };
 
@@ -133,3 +135,97 @@ export const pruneTombstones = (
 
 export const getLivePages = (pages: Iterable<PageMeta>) =>
   sortByIndex([...pages].filter((page) => !page.isDeleted));
+
+const MAX_PATCH_POINTS = 20_000;
+/** a stroke can't grow beyond this through patches */
+export const MAX_STROKE_POINTS = 100_000;
+const isPoint = (value: unknown): value is [number, number] =>
+  Array.isArray(value) &&
+  value.length === 2 &&
+  isFiniteNumber(value[0]) &&
+  isFiniteNumber(value[1]);
+
+/** validates an untrusted patch (see `ElementPatch`) */
+export const sanitizePatch = (value: unknown): ElementPatch | null => {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return null;
+  }
+  const patch = value as Record<string, any>;
+  if (
+    typeof patch.id !== "string" ||
+    !patch.id ||
+    patch.id.length > MAX_ID_LENGTH ||
+    !isFiniteNumber(patch.baseVersion) ||
+    !isFiniteNumber(patch.baseVersionNonce) ||
+    !isFiniteNumber(patch.basePointCount) ||
+    !isFiniteNumber(patch.version) ||
+    !isFiniteNumber(patch.versionNonce) ||
+    !Array.isArray(patch.appendPoints) ||
+    patch.appendPoints.length > MAX_PATCH_POINTS ||
+    !patch.appendPoints.every(isPoint) ||
+    !Array.isArray(patch.appendPressures ?? []) ||
+    !(patch.appendPressures ?? []).every(isFiniteNumber) ||
+    !patch.set ||
+    typeof patch.set !== "object"
+  ) {
+    return null;
+  }
+  const set: Record<string, unknown> = {};
+  for (const [key, setValue] of Object.entries(patch.set)) {
+    if (!(PATCHABLE_KEYS as readonly string[]).includes(key)) {
+      return null;
+    }
+    const isSimple =
+      setValue === null ||
+      ["number", "string", "boolean"].includes(typeof setValue) ||
+      isPoint(setValue);
+    if (!isSimple) {
+      return null;
+    }
+    set[key] = setValue;
+  }
+  return {
+    id: patch.id,
+    baseVersion: patch.baseVersion,
+    baseVersionNonce: patch.baseVersionNonce,
+    basePointCount: patch.basePointCount,
+    version: patch.version,
+    versionNonce: patch.versionNonce,
+    set,
+    appendPoints: patch.appendPoints,
+    appendPressures: patch.appendPressures ?? [],
+  };
+};
+
+/**
+ * The element a patch produces, or `null` when it doesn't apply on top of
+ * `base` (missing, other version, not a stroke) — the full element is needed.
+ */
+export const applyPatch = (
+  base: SyncedElement | undefined,
+  patch: ElementPatch,
+): SyncedElement | null => {
+  if (
+    !base ||
+    base.version !== patch.baseVersion ||
+    base.versionNonce !== patch.baseVersionNonce ||
+    base.type !== "freedraw" ||
+    !Array.isArray(base.points) ||
+    base.points.length !== patch.basePointCount ||
+    base.points.length + patch.appendPoints.length > MAX_STROKE_POINTS ||
+    patch.version <= base.version
+  ) {
+    return null;
+  }
+  return {
+    ...base,
+    ...patch.set,
+    points: [...(base.points as unknown[]), ...patch.appendPoints],
+    pressures: [
+      ...(Array.isArray(base.pressures) ? (base.pressures as unknown[]) : []),
+      ...patch.appendPressures,
+    ],
+    version: patch.version,
+    versionNonce: patch.versionNonce,
+  };
+};

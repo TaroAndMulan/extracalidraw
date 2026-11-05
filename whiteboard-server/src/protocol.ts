@@ -1,8 +1,8 @@
 /**
  * Types shared between the whiteboard server and the whiteboard app.
  *
- * The app imports this file with `import type` only, so nothing here may have
- * a runtime footprint.
+ * The app imports this file too (types, and a few tiny constants), so it must
+ * not import anything Node-specific.
  */
 
 export type Role = "admin" | "member";
@@ -64,6 +64,37 @@ export interface SyncedElement {
   updated?: number;
   [key: string]: unknown;
 }
+
+/**
+ * A stroke being drawn, sent as the points added since `baseVersion` instead
+ * of the whole element (which grows with every point). Applied only on top of
+ * exactly `baseVersion`; otherwise the full element is requested.
+ */
+export interface ElementPatch {
+  id: string;
+  /** the element the patch builds on: version, nonce and number of points */
+  baseVersion: number;
+  baseVersionNonce: number;
+  basePointCount: number;
+  version: number;
+  versionNonce: number;
+  /** changed simple properties (size, timestamps) */
+  set: Record<string, unknown>;
+  appendPoints: [number, number][];
+  appendPressures: number[];
+}
+
+/** keys an `ElementPatch` may change (besides points & pressures) */
+export const PATCHABLE_KEYS = [
+  "width",
+  "height",
+  "x",
+  "y",
+  "updated",
+  "angle",
+  "lastCommittedPoint",
+  "simulatePressure",
+] as const;
 
 export interface PresenceUser {
   socketId: string;
@@ -135,7 +166,19 @@ export interface ClientToServerEvents {
   "paper:elements": (data: {
     pageId: string;
     elements: SyncedElement[];
+    patches?: ElementPatch[];
   }) => void;
+  /** asks for the current version of elements (after a patch didn't fit) */
+  "paper:fetch": (data: { pageId: string; ids: string[] }) => void;
+  /**
+   * an image, pushed to everyone in the paper while it's stored. `preview`
+   * is a small, quick version shown until the full one arrives.
+   */
+  "paper:file": (
+    data: { fileId: string; mimeType: string; preview?: boolean },
+    bytes: ArrayBuffer | Uint8Array,
+    ack?: (response: { ok: boolean; error?: string }) => void,
+  ) => void;
   "paper:pages": (data: { pages: PageMeta[] }) => void;
   "paper:presence": (data: { pageId: string }) => void;
   "paper:pointer": (data: PointerPayload) => void;
@@ -158,7 +201,16 @@ export interface ServerToClientEvents {
   "paper:elements": (data: {
     pageId: string;
     elements: SyncedElement[];
+    patches?: ElementPatch[];
   }) => void;
+  /** patches that didn't fit the server's copy: send these in full */
+  "paper:resend": (data: { pageId: string; ids: string[] }) => void;
+  "paper:file": (
+    data: { fileId: string; mimeType: string; preview?: boolean },
+    bytes: ArrayBuffer | Uint8Array,
+  ) => void;
+  /** an image was uploaded (over HTTP): it can be downloaded now */
+  "paper:fileStored": (data: { fileId: string }) => void;
   "paper:pages": (data: { pages: PageMeta[] }) => void;
   /** full authoritative state of a page — replaces the local copy */
   "paper:resync": (data: { pageId: string; elements: SyncedElement[] }) => void;

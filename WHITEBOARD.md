@@ -11,7 +11,7 @@ This fork adds a self-hosted, multi-user whiteboard built on the Excalidraw edit
 - **LaTeX math**: insert formulas (_∑ Math_ or <kbd>Alt</kbd>+<kbd>M</kbd>) with a live preview and buttons for common structures and symbols; double-click a formula to edit it.
 - **Colored words**: while editing a text, select part of it and pick a color — only those words change color.
 - **Images**, export of a page as PNG/SVG/`.excalidraw`, and **Print / PDF of all pages**.
-- **Fast**: a single small Node.js process keeps open papers in memory and sends only what changed; the app is served compressed and cached.
+- **Fast, also on weak connections**: what you write reaches the others as you write it — in step with your voice — with only the network delay added (strokes send just their new points; a slow link never piles up stale updates). A pasted screenshot shows up for others right away as a quick preview and sharpens once fully loaded. A single small Node.js process keeps open papers in memory; the app is served compressed and cached.
 
 Everything — accounts, papers, images — stays on your own server.
 
@@ -196,6 +196,7 @@ browser ──HTTPS──▶ Caddy ──▶ whiteboard-server (Node.js, one pro
 
 - `whiteboard-app/` — the React app: login, dashboard, people, and the editor (the Excalidraw package from `packages/`) with the pages UI.
 - `whiteboard-server/` — the server. Open papers are kept in memory; every change is merged with Excalidraw's rules (higher element version wins, ties broken deterministically), forwarded only to the others in the paper, and written to disk shortly after. Cursors go only to people on the same page. If a connection drops, edits are kept and sent when it's back.
+- Live updates go out at once (at most one message per screen frame): a stroke being drawn only sends its newest points, and when a connection is slow, changes are merged instead of queued. Images go over the live connection when small; big ones first send a small preview there and upload the full picture separately, so they never hold up drawing. `node whiteboard-app/e2e/latency.mjs` measures it (see the developer notes).
 - Passwords are hashed with scrypt, logins are rate-limited, sessions are `HttpOnly` cookies, and the API rejects cross-site requests.
 
 ## Troubleshooting

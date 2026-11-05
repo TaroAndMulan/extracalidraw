@@ -127,7 +127,8 @@ export const createApp = async (
   // our request handler runs) and the hub exist
   const app: { api?: ReturnType<typeof createApi> } = {};
 
-  const server = http.createServer(async (req, res) => {
+  // no Nagle delay: small live messages (pen strokes) go out at once
+  const server = http.createServer({ noDelay: true }, async (req, res) => {
     const url = new URL(req.url || "/", "http://localhost");
     if (url.pathname.startsWith("/api/")) {
       await app.api!.handle(req, res, url, {

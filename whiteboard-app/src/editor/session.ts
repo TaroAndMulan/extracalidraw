@@ -45,12 +45,17 @@ import type {
   OrderedExcalidrawElement,
 } from "@excalidraw/element/types";
 
+import { applyPatch } from "../../../whiteboard-server/src/reconcile";
+
 import { FileSync } from "./files";
+import { createPatch, snapshotElement } from "./strokePatches";
 import { createBackgroundElements } from "./importPages";
 
 import type { BackgroundPage } from "./importPages";
 
+import type { SentSnapshot } from "./strokePatches";
 import type {
+  ElementPatch,
   JoinPaperResult,
   PageMeta,
   PaperSummary,
@@ -97,7 +102,12 @@ export interface SessionState {
 
 /** deleted elements are synced for a day so others learn about deletions */
 const DELETED_ELEMENT_TIMEOUT = 24 * 60 * 60 * 1000;
-const SEND_THROTTLE_MS = 33;
+/** at most one send per frame; the first change goes out right away */
+const SEND_INTERVAL_MS = 16;
+/** while more than this is waiting in the WebSocket, hold off (and merge) */
+const CONGESTION_BYTES = 32 * 1024;
+/** ask again for an element that didn't come after this long */
+const FETCH_RETRY_MS = 3000;
 const POINTER_THROTTLE_MS = 33;
 const IDLE_TIMEOUT_MS = 60_000;
 
@@ -157,9 +167,10 @@ const IDLE_APP_STATE = {
 export const getPageLabel = (page: PageMeta, index: number) =>
   page.name.trim() || `Page ${index + 1}`;
 
+export type PaperSocket = Socket<ServerToClientEvents, ClientToServerEvents>;
+
 export class PaperSession {
-  private socket: Socket<ServerToClientEvents, ClientToServerEvents> | null =
-    null;
+  private socket: PaperSocket | null = null;
   private api: ExcalidrawImperativeAPI | null = null;
   private apiUnsubscribers: (() => void)[] = [];
 
@@ -172,6 +183,16 @@ export class PaperSession {
   >();
   /** last version of each element the server is known to have */
   private serverVersions = new Map<string, number>();
+  /** what was last sent of strokes, to send only their new points */
+  private sentSnapshots = new Map<string, SentSnapshot>();
+  private sendTimer: number | null = null;
+  private lastSendAt = 0;
+  /** remote changes waiting for the next frame (bursts are applied at once) */
+  private pendingRemote = new Map<string, Map<string, SyncedElement>>();
+  private isRemoteFlushScheduled = false;
+  private isRemoteFrameBusy = false;
+  /** elements asked for in full (a patch didn't fit) → when */
+  private fetching = new Map<string, number>();
   private lastSceneVersion = -1;
   private remotePointers = new Map<
     string,
@@ -227,6 +248,7 @@ export class PaperSession {
     this.files = new FileSync(paperId, {
       shareToken: opts.shareToken ?? null,
       getApi: () => this.api,
+      getSocket: () => (this.socket?.connected ? this.socket : null),
       canUpload: () => this.state.canEdit,
       onImageStatusChange: (fileId, status) =>
         this.setImageStatus(fileId, status),
@@ -283,7 +305,7 @@ export class PaperSession {
   // ---------------------------------------------------------------------------
 
   connect() {
-    const socket: Socket<ServerToClientEvents, ClientToServerEvents> = io({
+    const socket: PaperSocket = io({
       path: "/socket.io",
       transports: ["websocket", "polling"],
       withCredentials: true,
@@ -316,9 +338,30 @@ export class PaperSession {
       this.setState({ status: this.hasJoined ? "reconnecting" : "connecting" });
     });
 
-    socket.on("paper:elements", ({ pageId, elements }) =>
-      this.applyRemoteElements(pageId, elements),
+    socket.on("paper:elements", ({ pageId, elements, patches }) =>
+      this.receiveRemote(pageId, elements, patches ?? []),
     );
+    socket.on("paper:file", (meta, bytes) => {
+      this.files.receive(
+        meta,
+        bytes instanceof ArrayBuffer
+          ? bytes
+          : (bytes.slice().buffer as ArrayBuffer),
+      );
+    });
+    socket.on("paper:fileStored", ({ fileId }) => this.files.onStored(fileId));
+    socket.on("paper:resend", ({ pageId, ids }) => {
+      // our patches didn't fit the server's copy: send these in full
+      for (const id of ids) {
+        this.serverVersions.delete(id);
+        this.sentSnapshots.delete(id);
+      }
+      if (pageId === this.state.currentPageId) {
+        this.sendNow();
+      } else {
+        this.sendChangedElements(pageId, this.getElements(pageId));
+      }
+    });
     socket.on("paper:resync", ({ pageId, elements }) =>
       this.replacePage(pageId, elements),
     );
@@ -384,7 +427,7 @@ export class PaperSession {
 
   destroy() {
     this.destroyed = true;
-    this.sendPendingElements.flush();
+    this.sendNow();
     this.socket?.disconnect();
     this.socket = null;
     this.detach();
@@ -469,6 +512,8 @@ export class PaperSession {
   private onRejoin(data: JoinPaperResult) {
     const socket = this.socket!;
     this.serverVersions = new Map();
+    this.sentSnapshots.clear();
+    this.fetching.clear();
     for (const elements of Object.values(data.elements)) {
       for (const element of elements) {
         this.serverVersions.set(element.id, element.version);
@@ -507,7 +552,7 @@ export class PaperSession {
           this.sendChangedElements(page.id, this.getElements(page.id));
         }
       }
-      this.sendPendingElements();
+      this.sendNow();
     }
   }
 
@@ -646,8 +691,11 @@ export class PaperSession {
 
   /** the server rejected our changes: take its state as is */
   private replacePage(pageId: string, elements: SyncedElement[]) {
+    // (includes whatever was still queued for this page)
+    this.pendingRemote.delete(pageId);
     for (const element of elements) {
       this.serverVersions.set(element.id, element.version);
+      this.sentSnapshots.delete(element.id);
     }
     const restored = restoreElements(
       elements as unknown as ExcalidrawElement[],
@@ -681,7 +729,7 @@ export class PaperSession {
     this.lastSceneVersion = version;
     this.emitContentChange(this.state.currentPageId);
     if (this.state.canEdit) {
-      this.sendPendingElements();
+      this.scheduleSend();
       this.files.sync(elements);
     }
   };
@@ -691,40 +739,179 @@ export class PaperSession {
     if (!socket?.connected || !this.hasJoined || !this.state.canEdit) {
       return;
     }
-    const changed: OrderedExcalidrawElement[] = [];
+    const full: OrderedExcalidrawElement[] = [];
+    const patches: ElementPatch[] = [];
     for (const element of elements) {
-      if (
-        element.version > (this.serverVersions.get(element.id) ?? -1) &&
-        isSyncableElement(element)
-      ) {
-        changed.push(element);
+      const serverVersion = this.serverVersions.get(element.id) ?? -1;
+      if (element.version <= serverVersion || !isSyncableElement(element)) {
+        continue;
+      }
+      // a stroke being drawn: only its new points
+      const snapshot = this.sentSnapshots.get(element.id);
+      const patch =
+        snapshot && snapshot.version === serverVersion
+          ? createPatch(element, snapshot)
+          : null;
+      if (patch) {
+        patches.push(patch);
+      } else {
+        full.push(element);
+      }
+      this.serverVersions.set(element.id, element.version);
+      const nextSnapshot = snapshotElement(element);
+      if (nextSnapshot) {
+        this.sentSnapshots.set(element.id, nextSnapshot);
+      } else {
+        this.sentSnapshots.delete(element.id);
       }
     }
-    if (!changed.length) {
+    if (!full.length && !patches.length) {
       return;
-    }
-    for (const element of changed) {
-      this.serverVersions.set(element.id, element.version);
     }
     socket.emit("paper:elements", {
       pageId,
-      elements: changed as unknown as SyncedElement[],
+      elements: full as unknown as SyncedElement[],
+      ...(patches.length ? { patches } : {}),
     });
   }
 
-  private sendPendingElements = throttle(
-    () => {
-      const pageId = this.state.currentPageId;
-      if (this.api && pageId) {
-        this.sendChangedElements(
-          pageId,
-          this.api.getSceneElementsIncludingDeleted(),
-        );
+  /** sends soon: right away if nothing was sent this frame */
+  private scheduleSend() {
+    if (this.sendTimer !== null) {
+      return;
+    }
+    const wait = Math.max(
+      0,
+      this.lastSendAt + SEND_INTERVAL_MS - performance.now(),
+    );
+    this.sendTimer = window.setTimeout(this.flushSend, wait);
+  }
+
+  private flushSend = () => {
+    this.sendTimer = null;
+    if (!this.socket?.connected) {
+      // everything unsent goes out after reconnecting (onRejoin)
+      return;
+    }
+    // on a slow connection, sending more would only queue up stale states:
+    // wait, then send everything that changed meanwhile in one go
+    if (this.isCongested()) {
+      this.sendTimer = window.setTimeout(this.flushSend, SEND_INTERVAL_MS);
+      return;
+    }
+    this.sendNow();
+  };
+
+  /** sends the current page's changes now (e.g. before switching pages) */
+  private sendNow() {
+    if (this.sendTimer !== null) {
+      window.clearTimeout(this.sendTimer);
+      this.sendTimer = null;
+    }
+    this.lastSendAt = performance.now();
+    const pageId = this.state.currentPageId;
+    if (this.api && pageId) {
+      this.sendChangedElements(
+        pageId,
+        this.api.getSceneElementsIncludingDeleted(),
+      );
+    }
+  }
+
+  private isCongested() {
+    const engine = (this.socket?.io as any)?.engine;
+    const webSocket = engine?.transport?.ws;
+    if (webSocket && typeof webSocket.bufferedAmount === "number") {
+      return webSocket.bufferedAmount > CONGESTION_BYTES;
+    }
+    return (engine?.writeBuffer?.length ?? 0) > 0;
+  }
+
+  /**
+   * Remote changes: patches are turned into full elements (on top of the
+   * newest copy we have, or fetched if we're missing what they build on).
+   * A lone message is applied right away; several within one frame are
+   * applied together.
+   */
+  private receiveRemote(
+    pageId: string,
+    elements: SyncedElement[],
+    patches: ElementPatch[],
+  ) {
+    let pending = this.pendingRemote.get(pageId);
+    if (!pending) {
+      pending = new Map();
+      this.pendingRemote.set(pageId, pending);
+    }
+    for (const element of elements) {
+      this.fetching.delete(element.id);
+      const queued = pending.get(element.id);
+      if (!queued || isNewer(element, queued)) {
+        pending.set(element.id, element);
       }
-    },
-    SEND_THROTTLE_MS,
-    { leading: true, trailing: true },
-  );
+    }
+    if (patches.length) {
+      const local: ReadonlyMap<string, ExcalidrawElement> =
+        pageId === this.state.currentPageId && this.api
+          ? this.api.getSceneElementsMapIncludingDeleted()
+          : new Map(
+              this.getElements(pageId).map((element) => [element.id, element]),
+            );
+      const missing: string[] = [];
+      for (const patch of patches) {
+        const base =
+          pending.get(patch.id) ??
+          (local.get(patch.id) as unknown as SyncedElement | undefined);
+        const next = applyPatch(base, patch);
+        if (next) {
+          pending.set(patch.id, next);
+        } else if (
+          performance.now() - (this.fetching.get(patch.id) ?? -Infinity) >
+          FETCH_RETRY_MS
+        ) {
+          this.fetching.set(patch.id, performance.now());
+          missing.push(patch.id);
+        }
+      }
+      if (missing.length) {
+        this.socket?.emit("paper:fetch", { pageId, ids: missing });
+      }
+    }
+    if (this.isRemoteFrameBusy) {
+      this.isRemoteFlushScheduled = true;
+    } else {
+      this.flushRemote();
+    }
+  }
+
+  /** applies remote changes waiting for the next frame */
+  private applyPendingRemote() {
+    const pending = this.pendingRemote;
+    this.pendingRemote = new Map();
+    for (const [pageId, elements] of pending) {
+      if (elements.size) {
+        this.applyRemoteElements(pageId, [...elements.values()]);
+      }
+    }
+  }
+
+  private flushRemote = () => {
+    this.isRemoteFlushScheduled = false;
+    this.applyPendingRemote();
+    // anything else arriving before the next frame waits for it
+    this.isRemoteFrameBusy = true;
+    const onFrame = () => {
+      this.isRemoteFrameBusy = false;
+      if (this.isRemoteFlushScheduled && !this.destroyed) {
+        this.flushRemote();
+      }
+    };
+    if (document.hidden) {
+      window.setTimeout(onFrame, 50);
+    } else {
+      window.requestAnimationFrame(onFrame);
+    }
+  };
 
   /** whether some local changes haven't reached the server yet */
   hasUnsyncedChanges() {
@@ -959,8 +1146,10 @@ export class PaperSession {
     if (!api || pageId === current || !this.pageMetas.has(pageId)) {
       return;
     }
-    // make sure the last strokes of the page we leave are sent
-    this.sendPendingElements.flush();
+    // make sure the last strokes of the page we leave are sent, and what
+    // others just did is in
+    this.sendNow();
+    this.applyPendingRemote();
 
     if (current) {
       const appState = api.getAppState();

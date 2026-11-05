@@ -93,9 +93,25 @@ export class Database {
   private saveTimer: NodeJS.Timeout | null = null;
   private savePromise: Promise<void> = Promise.resolve();
 
+  // lookups by id (every live message checks permissions)
+  private usersById = new Map<string, UserRecord>();
+  private papersById = new Map<string, PaperRecord>();
+  private sessionsByHash = new Map<string, SessionRecord>();
+
   private constructor(file: string, data: DbData) {
     this.file = file;
     this.data = data;
+    this.reindex();
+  }
+
+  private reindex() {
+    this.usersById = new Map(this.data.users.map((user) => [user.id, user]));
+    this.papersById = new Map(
+      this.data.papers.map((paper) => [paper.id, paper]),
+    );
+    this.sessionsByHash = new Map(
+      this.data.sessions.map((session) => [session.tokenHash, session]),
+    );
   }
 
   static async open(dataDir: string) {
@@ -119,6 +135,7 @@ export class Database {
 
   /** schedules a write */
   save() {
+    this.reindex();
     if (this.saveTimer) {
       return;
     }
@@ -160,7 +177,7 @@ export class Database {
   }
 
   getUserById(id: string) {
-    return this.data.users.find((user) => user.id === id) ?? null;
+    return this.usersById.get(id) ?? null;
   }
 
   getUserByUsername(username: string) {
@@ -240,10 +257,7 @@ export class Database {
     if (!token) {
       return null;
     }
-    const tokenHash = hashToken(token);
-    const session = this.data.sessions.find(
-      (session) => session.tokenHash === tokenHash,
-    );
+    const session = this.sessionsByHash.get(hashToken(token));
     if (!session || session.expiresAt < Date.now()) {
       return null;
     }
@@ -291,7 +305,7 @@ export class Database {
   }
 
   getPaper(id: string) {
-    return this.data.papers.find((paper) => paper.id === id) ?? null;
+    return this.papersById.get(id) ?? null;
   }
 
   createPaper(input: {
@@ -356,6 +370,10 @@ export class Database {
 // -----------------------------------------------------------------------------
 
 const MIME_RE = /^[a-z]+\/[a-z0-9.+-]+$/i;
+
+/** image types people may upload */
+export const IMAGE_MIME_RE =
+  /^image\/(png|jpeg|gif|webp|svg\+xml|bmp|x-icon|avif)$/;
 
 export class PaperStorage {
   constructor(private readonly dataDir: string) {}

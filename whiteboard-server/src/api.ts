@@ -16,7 +16,7 @@ import {
   canManagePaper,
   isValidShareToken,
 } from "./realtime";
-import { isValidId, randomId, toPublicUser } from "./store";
+import { IMAGE_MIME_RE, isValidId, randomId, toPublicUser } from "./store";
 
 import type { Config } from "./config";
 import type { Role } from "./protocol";
@@ -36,7 +36,6 @@ export interface ApiContext {
 
 const MAX_TITLE_LENGTH = 120;
 const MAX_THUMBNAIL_BYTES = 1024 * 1024;
-const IMAGE_MIME_RE = /^image\/(png|jpeg|gif|webp|svg\+xml|bmp|x-icon|avif)$/;
 
 const requireUser = (ctx: ApiContext) => {
   if (!ctx.user) {
@@ -534,6 +533,7 @@ export const createApi = ({
     }
     const data = await readBody(ctx.req, config.maxFileBytes);
     await storage.saveFile(paper.id, fileId, mimeType, data);
+    hub.onFileStored(paper.id, fileId);
     sendJSON(ctx.res, 201, { ok: true });
   });
 

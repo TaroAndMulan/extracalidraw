@@ -13,6 +13,7 @@ import { config as defaultConfig } from "./config";
 
 import type {
   ClientToServerEvents,
+  ElementPatch,
   JoinPaperResult,
   PageMeta,
   PaperSummary,
@@ -291,6 +292,80 @@ describe("whiteboard server: real-time", () => {
     expect(state.presence).toHaveLength(3);
   });
 
+  it("strokes grow through patches; others get the new points only", async () => {
+    const admin = connect(adminCookie);
+    const maya = connect(memberCookie);
+    const joined = await joinOk(admin, paper.id);
+    await joinOk(maya, paper.id);
+    const pageId = joined.pages[0].id;
+
+    const stroke = element("s", 1, {
+      type: "freedraw",
+      points: [[0, 0]],
+      pressures: [],
+      width: 0,
+    });
+    const patch = (
+      baseVersion: number,
+      basePointCount: number,
+      points: [number, number][],
+    ): ElementPatch => ({
+      id: "s",
+      baseVersion,
+      baseVersionNonce: baseVersion * 10,
+      basePointCount,
+      version: baseVersion + 1,
+      versionNonce: (baseVersion + 1) * 10,
+      set: { width: basePointCount + points.length },
+      appendPoints: points,
+      appendPressures: [],
+    });
+
+    admin.emit("paper:elements", { pageId, elements: [stroke] });
+    await next(maya, "paper:elements");
+    const relayed = next(maya, "paper:elements");
+    admin.emit("paper:elements", {
+      pageId,
+      elements: [],
+      patches: [patch(1, 1, [[1, 1]])],
+    });
+    expect((await relayed).patches).toEqual([patch(1, 1, [[1, 1]])]);
+
+    // a patch that doesn't fit what the server has: send it in full
+    const resend = next(admin, "paper:resend");
+    admin.emit("paper:elements", {
+      pageId,
+      elements: [],
+      patches: [patch(5, 9, [[2, 2]])],
+    });
+    expect(await resend).toEqual({ pageId, ids: ["s"] });
+
+    // whoever misses a base can fetch the element
+    const fetched = next(maya, "paper:elements");
+    maya.emit("paper:fetch", { pageId, ids: ["s"] });
+    expect((await fetched).elements[0]).toMatchObject({
+      id: "s",
+      version: 2,
+      width: 2,
+      points: [
+        [0, 0],
+        [1, 1],
+      ],
+    });
+
+    // invalid patches are ignored (no relay, no resend)
+    const events = record(maya, "paper:elements");
+    admin.emit("paper:elements", {
+      pageId,
+      elements: [],
+      patches: [{ ...patch(2, 2, [[3, 3]]), set: { strokeColor: "red" } }],
+    });
+    await wait(100);
+    expect(events).toHaveLength(0);
+    const state = await joinOk(connect(adminCookie), paper.id);
+    expect(state.elements[pageId][0]).toMatchObject({ version: 2 });
+  });
+
   it("people outside the paper can't join it", async () => {
     const omar = connect(otherCookie);
     const result = await join(omar, paper.id);
@@ -473,6 +548,81 @@ describe("whiteboard server: images", () => {
       },
     );
     expect(notAnImage.status).toBe(415);
+  });
+
+  it("pushes images over the live connection and stores them", async () => {
+    const admin = connect(adminCookie);
+    const maya = connect(memberCookie);
+    await joinOk(admin, paper.id);
+    await joinOk(maya, paper.id);
+    const png = new Uint8Array([137, 80, 78, 71, 9, 9, 9]);
+
+    // a preview is only passed on
+    const preview = new Promise<{ meta: any; bytes: Uint8Array }>((resolve) =>
+      maya.once("paper:file", (meta, bytes) =>
+        resolve({ meta, bytes: new Uint8Array(bytes as ArrayBuffer) }),
+      ),
+    );
+    admin.emit(
+      "paper:file",
+      { fileId: "img1", mimeType: "image/webp", preview: true },
+      new Uint8Array([1, 2]),
+    );
+    expect(await preview).toEqual({
+      meta: { fileId: "img1", mimeType: "image/webp", preview: true },
+      bytes: new Uint8Array([1, 2]),
+    });
+    expect(
+      (
+        await fetch(`${base}/api/papers/${paper.id}/files/img1`, {
+          headers: { cookie: adminCookie },
+        })
+      ).status,
+    ).toBe(404);
+
+    // the full image is passed on and stored (then acknowledged)
+    const full = new Promise<Uint8Array>((resolve) =>
+      maya.once("paper:file", (_meta, bytes) =>
+        resolve(new Uint8Array(bytes as ArrayBuffer)),
+      ),
+    );
+    const ack = await new Promise((resolve) =>
+      admin.emit(
+        "paper:file",
+        { fileId: "img1", mimeType: "image/png" },
+        png,
+        resolve,
+      ),
+    );
+    expect(ack).toEqual({ ok: true });
+    expect(await full).toEqual(png);
+    const stored = await fetch(`${base}/api/papers/${paper.id}/files/img1`, {
+      headers: { cookie: memberCookie },
+    });
+    expect(new Uint8Array(await stored.arrayBuffer())).toEqual(png);
+
+    // not images, or from people who can't edit: refused
+    const refused = await new Promise((resolve) =>
+      admin.emit(
+        "paper:file",
+        { fileId: "x", mimeType: "text/html" },
+        new Uint8Array([1]),
+        resolve,
+      ),
+    );
+    expect(refused).toMatchObject({ ok: false });
+  });
+
+  it("tells everyone when an uploaded image can be downloaded", async () => {
+    const admin = connect(adminCookie);
+    await joinOk(admin, paper.id);
+    const stored = next(admin, "paper:fileStored");
+    await fetch(`${base}/api/papers/${paper.id}/files/up1`, {
+      method: "PUT",
+      headers: { cookie: memberCookie, "Content-Type": "image/png" },
+      body: new Uint8Array([137, 80, 78, 71]),
+    });
+    expect(await stored).toEqual({ fileId: "up1" });
   });
 });
 

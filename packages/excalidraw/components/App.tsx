@@ -150,6 +150,7 @@ import {
   getInitializedImageElements,
   normalizeSVG,
   updateImageCache as _updateImageCache,
+  loadHTMLImageElement,
   getBoundTextElement,
   getContainerCenter,
   getContainerElement,
@@ -4926,16 +4927,83 @@ class App extends React.Component<AppProps, AppState> {
    * adds supplied files to existing files in the appState.
    * NOTE if file already exists in editor state, the file data is not updated
    * */
-  public addFiles: ExcalidrawImperativeAPI["addFiles"] = withBatchedUpdates(
-    (files) => {
-      const { addedFiles } = this.addMissingFiles(files);
+  public addFiles: ExcalidrawImperativeAPI["addFiles"] = (files, opts) =>
+    this.addFilesBatched({ files, replace: !!opts?.replace });
 
-      this.clearImageShapeCache(addedFiles);
+  private addFilesBatched = withBatchedUpdates(
+    ({ files, replace }: { files: BinaryFileData[]; replace: boolean }) => {
+      const replacedIds = new Set<string>();
+      if (replace) {
+        const nextFiles = { ...this.files };
+        for (const fileData of files) {
+          const existing = nextFiles[fileData.id];
+          if (existing && existing.dataURL !== fileData.dataURL) {
+            delete nextFiles[fileData.id];
+            replacedIds.add(fileData.id);
+          }
+        }
+        this.files = nextFiles;
+      }
+
+      const { addedFiles } = this.addMissingFiles(files);
+      const newFiles: BinaryFiles = {};
+      const replacedFiles: BinaryFiles = {};
+      for (const [id, fileData] of Object.entries(addedFiles)) {
+        (replacedIds.has(id) ? replacedFiles : newFiles)[id] = fileData;
+      }
+
+      this.clearImageShapeCache(newFiles);
       this.scene.triggerUpdate();
 
       this.addNewImagesToImageCache();
+      if (replacedIds.size) {
+        this.swapReplacedImages(replacedFiles);
+      }
     },
   );
+
+  /**
+   * Decodes replaced files and only then swaps them into the image cache, so
+   * the previous picture stays on screen instead of a placeholder.
+   */
+  private swapReplacedImages = async (files: BinaryFiles) => {
+    await Promise.all(
+      Object.values(files).map(async (fileData) => {
+        if (fileData.mimeType === MIME_TYPES.binary) {
+          return;
+        }
+        const previous = this.imageCache.get(fileData.id)?.image;
+        try {
+          const image = await loadHTMLImageElement(fileData.dataURL, () =>
+            this.renderEnvironment.createImage(),
+          );
+          // the previous picture may still be decoding: don't let it win
+          if (previous instanceof Promise) {
+            await previous.catch(() => {});
+          }
+          if (this.unmounted || this.files[fileData.id] !== fileData) {
+            return;
+          }
+          this.imageCache.set(fileData.id, {
+            image,
+            mimeType: fileData.mimeType,
+          });
+        } catch (error: any) {
+          // keep showing the previous picture
+          console.error(error);
+        }
+      }),
+    );
+    if (this.unmounted) {
+      return;
+    }
+    this.scene.getNonDeletedElements().forEach((element) => {
+      if (isInitializedImageElement(element) && files[element.fileId]) {
+        ShapeCache.delete(element);
+      }
+    });
+    this.scene.triggerUpdate();
+  };
 
   private addMissingFiles = (
     files: BinaryFiles | BinaryFileData[],

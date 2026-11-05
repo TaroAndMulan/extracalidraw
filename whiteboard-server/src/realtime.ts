@@ -2,18 +2,22 @@ import crypto from "node:crypto";
 
 import { getSessionToken } from "./auth";
 import {
+  applyPatch,
   getLivePages,
+  isNewer,
   mergeVersioned,
   pruneTombstones,
   sanitizeElement,
   sanitizePage,
+  sanitizePatch,
   sortByIndex,
 } from "./reconcile";
-import { isValidId, randomId } from "./store";
+import { IMAGE_MIME_RE, isValidId, randomId } from "./store";
 
 import type { Config } from "./config";
 import type {
   ClientToServerEvents,
+  ElementPatch,
   JoinPaperResult,
   Presenter,
   PageMeta,
@@ -99,6 +103,9 @@ const pageRoom = (paperId: string, pageId: string) =>
 const followRoom = (socketId: string) => `follow:${socketId}`;
 
 const randomNonce = () => Math.floor(Math.random() * 2 ** 31);
+
+/** quick low-res versions of images shown while the full one uploads */
+const MAX_PREVIEW_BYTES = 512 * 1024;
 
 export const createDefaultPage = (index = "a0"): PageMeta => ({
   id: randomId(9),
@@ -202,6 +209,36 @@ export class LivePaper {
       this.schedulePersist();
     }
     return accepted;
+  }
+
+  /**
+   * applies stroke patches; returns the accepted ones (to forward) and the
+   * ids whose patch didn't fit (the sender must send them in full)
+   */
+  applyPatches(pageId: string, patches: ElementPatch[]) {
+    const map = this.elements.get(pageId);
+    const accepted: ElementPatch[] = [];
+    const rejected: string[] = [];
+    if (!map || !this.pages.has(pageId)) {
+      return { accepted, rejected: patches.map((patch) => patch.id) };
+    }
+    for (const patch of patches) {
+      const base = map.get(patch.id);
+      const next = applyPatch(base, patch);
+      if (next && isNewer(next, base)) {
+        map.set(patch.id, next);
+        accepted.push(patch);
+      } else if (!base || base.version < patch.version) {
+        // we're missing what it builds on
+        rejected.push(patch.id);
+      }
+    }
+    if (accepted.length) {
+      this.dirtyPages.add(pageId);
+      this.lastChangedAt = Date.now();
+      this.schedulePersist();
+    }
+    return { accepted, rejected };
   }
 
   applyPages(incoming: PageMeta[]) {
@@ -424,6 +461,11 @@ export class PaperHub {
   // ---------------------------------------------------------------------------
   // notifications from the REST API
   // ---------------------------------------------------------------------------
+
+  /** an image was uploaded: whoever waits for it can download it now */
+  onFileStored(paperId: string, fileId: string) {
+    this.io.to(paperRoom(paperId)).emit("paper:fileStored", { fileId });
+  }
 
   /** title/lock/membership changed */
   onPaperUpdated(paper: PaperRecord) {
@@ -729,11 +771,92 @@ export class PaperHub {
           elements.push(element);
         }
       }
+      const patches: ElementPatch[] = [];
+      for (const value of Array.isArray(data.patches) ? data.patches : []) {
+        const patch = sanitizePatch(value);
+        if (patch) {
+          patches.push(patch);
+        }
+      }
+      // full elements first: patches may build on them
       const accepted = ctx.live.applyElements(pageId, elements);
-      if (accepted?.length) {
-        socket
-          .to(paperRoom(ctx.paper.id))
-          .emit("paper:elements", { pageId, elements: accepted });
+      if (accepted === null) {
+        return;
+      }
+      const patched = patches.length
+        ? ctx.live.applyPatches(pageId, patches)
+        : { accepted: [], rejected: [] };
+      if (accepted.length || patched.accepted.length) {
+        socket.to(paperRoom(ctx.paper.id)).emit("paper:elements", {
+          pageId,
+          elements: accepted,
+          ...(patched.accepted.length ? { patches: patched.accepted } : {}),
+        });
+      }
+      if (patched.rejected.length) {
+        socket.emit("paper:resend", { pageId, ids: patched.rejected });
+      }
+    });
+
+    socket.on("paper:file", async (data, bytes, ack) => {
+      const reply = typeof ack === "function" ? ack : () => {};
+      const ctx = this.getContext(socket);
+      if (!ctx || !ctx.canEdit) {
+        reply({ ok: false, error: "Not allowed" });
+        return;
+      }
+      const fileId = data?.fileId;
+      const mimeType = String(data?.mimeType || "").toLowerCase();
+      const isPreview = data?.preview === true;
+      const buffer = Buffer.isBuffer(bytes)
+        ? bytes
+        : bytes instanceof ArrayBuffer
+        ? Buffer.from(bytes)
+        : null;
+      const maxBytes = isPreview ? MAX_PREVIEW_BYTES : this.config.maxFileBytes;
+      if (
+        !isValidId(fileId) ||
+        !IMAGE_MIME_RE.test(mimeType) ||
+        !buffer?.length ||
+        buffer.length > maxBytes
+      ) {
+        reply({ ok: false, error: "Invalid image" });
+        return;
+      }
+      // everyone gets it right away (images are already compressed: don't
+      // deflate them again); storing happens meanwhile
+      socket
+        .to(paperRoom(ctx.paper.id))
+        .compress(false)
+        .emit("paper:file", { fileId, mimeType, preview: isPreview }, buffer);
+      if (isPreview) {
+        reply({ ok: true });
+        return;
+      }
+      try {
+        if (!(await this.storage.hasFile(ctx.paper.id, fileId))) {
+          await this.storage.saveFile(ctx.paper.id, fileId, mimeType, buffer);
+        }
+        reply({ ok: true });
+      } catch (error) {
+        console.error("[paper:file]", error);
+        reply({ ok: false, error: "Couldn't store the image" });
+      }
+    });
+
+    socket.on("paper:fetch", (data) => {
+      const ctx = this.getContext(socket);
+      const pageId = data?.pageId;
+      if (!ctx || !isValidId(pageId) || !Array.isArray(data?.ids)) {
+        return;
+      }
+      const map = ctx.live.elements.get(pageId);
+      const elements = data.ids
+        .slice(0, 1000)
+        .map((id: unknown) => (typeof id === "string" ? map?.get(id) : null))
+        .filter((element): element is SyncedElement => !!element);
+      if (elements.length) {
+        socket.emit("paper:elements", { pageId, elements });
       }
     });
 

@@ -1449,7 +1449,12 @@ export interface ExcalidrawImperativeAPI {
   registerAction: (action: Action) => void;
   refresh: InstanceType<typeof App>["refresh"];
   setToast: InstanceType<typeof App>["setToast"];
-  addFiles: (data: BinaryFileData[]) => void;
+  /**
+   * Adds files to the scene. Files whose id is already there are skipped,
+   * unless `replace` is set: then their data is replaced and the new picture
+   * is swapped in once decoded (the old one stays visible meanwhile).
+   */
+  addFiles: (data: BinaryFileData[], opts?: { replace?: boolean }) => void;
   id: string;
   setActiveTool: InstanceType<typeof App>["setActiveTool"];
   setCursor: InstanceType<typeof App>["cursor"]["set"];

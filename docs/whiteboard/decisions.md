@@ -18,6 +18,8 @@
 
 **Templates and PDF pages are locked images.** Everyone sees exactly the same background, it appears in thumbnails, exports and print, and it reuses the image pipeline. pdf.js runs only in the importing browser (lazy-loaded); others just download the rendered page images.
 
+**Latency first.** People talk while they draw, so strokes must reach others in step with their voice. Sends are per frame with the first change immediate (no 30 ms throttle), strokes send only their new points (≈ 5× fewer bytes), and on a congested link changes merge instead of queueing. Images go over HTTP (a separate connection) when big, so they never hold up strokes; a small preview over the live connection makes them visible at once. Measured with `e2e/latency.mjs` (development.md).
+
 **Math as SVG images.** MathJax renders LaTeX to SVG with glyphs as paths (no fonts needed), so a formula is just an image: it syncs, prints and exports like any other, and the editor already inverts SVG images in dark mode. The LaTeX source lives in `customData.whiteboardMath` for editing. MathJax (~1.3 MB) only loads in the browser of whoever opens the math editor.
 
 ### Changes to `packages/`
@@ -34,6 +36,12 @@ Partial text colors needed the editor core (a textarea-based editor and single-c
 - Tests: `packages/excalidraw/tests/textColorRanges.test.tsx` (SVG export, restore).
 
 When merging upstream, conflicts would show up in those files; the logic itself lives in `textColorRanges.ts`.
+
+Replacing an image's data (a preview by the full picture) needed an option on `addFiles`, which skips ids it already has:
+
+- `packages/excalidraw/types.ts`: `addFiles(files, { replace?: boolean })` on `ExcalidrawImperativeAPI`.
+- `packages/excalidraw/components/App.tsx`: with `replace`, files whose data differs are replaced; the new picture is decoded first and only then swapped into the image cache (`swapReplacedImages`), so there's no placeholder flash. Without the option nothing changes.
+- Tests: `packages/excalidraw/tests/addFiles.test.tsx`.
 
 ## Known limitations
 

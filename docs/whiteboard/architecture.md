@@ -60,10 +60,10 @@ All ids are validated (`/^[A-Za-z0-9_-]{1,128}$/`) before touching the file syst
 
 - Excalidraw holds the **current page** only. Other pages live in `PaperSession.pageElements`; `getElements(pageId)` hides the difference.
 - `switchPage` flushes pending sends, stores the current page and its viewport, loads the target page with `updateScene`, clears undo history and announces the new page (`paper:presence`).
-- `onEditorChange` (Excalidraw `onChange`) → if the scene version changed, `sendPendingElements` (throttled, ~30/s) sends elements whose version is above what the server is known to have (`serverVersions`).
-- Remote changes for the current page are reconciled into the editor (`restoreElements` → `reconcileElements` → `bumpElementVersions`, same as excalidraw-app's collab); for other pages into `pageElements`.
+- `onEditorChange` (Excalidraw `onChange`) → if the scene version changed, `scheduleSend`: the first change goes out right away, then at most one message per frame (16 ms). It sends elements whose version is above what the server is known to have (`serverVersions`); strokes being drawn go as patches with just their new points (`strokePatches.ts`, protocol → "Stroke patches"). While more than 32 KB wait in the WebSocket (slow connection), sending pauses and the changes merge into the next message, so the newest state is never stuck behind stale ones.
+- Remote changes (`receiveRemote`): patches are turned into full elements, then reconciled into the editor (`restoreElements` → `reconcileElements` → `bumpElementVersions`, same as excalidraw-app's collab), or into `pageElements` for other pages. A single message is applied immediately; several within one frame are applied together.
 - After a reconnect the server sends its full state; the session merges it and sends whatever is newer locally (offline edits, pages).
 
 ### Images
 
-Image elements reference a `fileId` (content hash). `FileSync` uploads files that exist locally but not on the server, then marks elements `saved` (on any page); other clients download `saved` files they don't have. Imported PDF pages and templates are just images with `locked: true` on new pages.
+Image elements reference a `fileId` (content hash). `FileSync` uploads files that exist locally but not on the server, then marks elements `saved` (on any page); other clients download `saved` files they don't have. To make pasted images appear for others at once, they're also pushed over the live connection — small ones whole, bigger ones as a quick preview first (protocol → "Images"); `FileSync` tracks which files are only previews (never uploaded, replaced by the full file). Imported PDF pages and templates are just images with `locked: true` on new pages.

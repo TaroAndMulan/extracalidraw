@@ -46,7 +46,9 @@ Client → server:
 | Event | Payload | Notes |
 | --- | --- | --- |
 | `paper:join` (ack) | `{ paperId, shareToken?, guest? }` | ack `{ ok, data: JoinPaperResult }`: pages, elements of all live pages, presence, permissions, presenter |
-| `paper:elements` | `{ pageId, elements }` | changed elements only; refused edits → `paper:resync` to the sender |
+| `paper:elements` | `{ pageId, elements, patches? }` | changed elements only; strokes being drawn as `patches` (see below); refused edits → `paper:resync` to the sender; patches that don't fit → `paper:resend` to the sender |
+| `paper:fetch` | `{ pageId, ids }` | asks for the current full elements (a received patch didn't fit the local copy) → `paper:elements` |
+| `paper:file` (ack) | `{ fileId, mimeType, preview? }`, bytes | an image over the live connection, passed on to the paper right away. Full files are stored too (ack `{ ok }` once stored); `preview: true` (≤ 512 KB) is only passed on |
 | `paper:pages` | `{ pages }` | changed page metas; refused deletes → full page list back to the sender |
 | `paper:presence` | `{ pageId }` | which page this socket is on (also routes cursors) |
 | `paper:pointer` (volatile) | cursor, button, selection | forwarded only to sockets on the same page |
@@ -57,9 +59,24 @@ Client → server:
 | `paper:lock` | `{ locked }` | managers |
 | `paper:present` | `{ on }` | managers: presenter mode |
 
-Server → client: `paper:elements`, `paper:pages`, `paper:resync`, `paper:presence`, `paper:pointer`, `paper:idle`, `paper:followers`, `paper:viewport`, `paper:summon`, `paper:settings` (`{ locked, title }`), `paper:presenter`, `paper:removed` (paper deleted / access lost).
+Server → client: `paper:elements` (`{ pageId, elements, patches? }`), `paper:resend` (`{ pageId, ids }`: send these in full), `paper:file` (`meta`, bytes), `paper:fileStored` (`{ fileId }`: an HTTP upload finished, download now), `paper:pages`, `paper:resync`, `paper:presence`, `paper:pointer`, `paper:idle`, `paper:followers`, `paper:viewport`, `paper:summon`, `paper:settings` (`{ locked, title }`), `paper:presenter`, `paper:removed` (paper deleted / access lost).
 
 Rooms: `paper:<id>` (everyone in a paper), `page:<paperId>:<pageId>` (cursors), `follow:<socketId>` (followers of a socket).
+
+### Stroke patches
+
+While someone draws, a freedraw element grows by one point per pointer move. Instead of the whole element every time, the session sends an `ElementPatch`: `{ id, baseVersion, baseVersionNonce, basePointCount, version, versionNonce, set, appendPoints, appendPressures }` — the points added since the last send plus changed simple properties (`set` may only hold `PATCHABLE_KEYS`: size, position, `updated`, …). A patch applies only on top of exactly its base (same version, nonce and point count, a freedraw element); the result is an ordinary element with the new version, so reconciliation is unchanged.
+
+- Server: applies patches after the message's full elements; relays the accepted ones as `patches`; answers the others with `paper:resend` when it's missing what they build on (the sender forgets what it sent of them and sends them in full).
+- Receivers: apply a patch on top of the copy queued from the same burst or the one in the scene; when it doesn't fit, they `paper:fetch` the element.
+- Anything else (color changed, points rewritten, erase, undo) is sent as a full element.
+
+### Images
+
+Image data goes over the live connection so others see it at once (`files.ts`):
+
+- up to 64 KB: the whole file over `paper:file` (the server passes it on, stores it, acks); HTTP upload if that fails;
+- bigger raster images: a ≤ 640 px WebP preview over `paper:file` (`preview: true`), then the full file over HTTP (a separate connection, so a big upload doesn't hold up pen strokes); when stored, the server sends `paper:fileStored` and others download it right away (they don't wait for the element to be marked `saved`). The preview is replaced without flashing (`addFiles(…, { replace: true })`).
 
 ## Reconciliation
 

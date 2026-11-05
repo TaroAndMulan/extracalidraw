@@ -20,6 +20,7 @@ Production-like run: `yarn whiteboard:build`, then `DATA_DIR=/tmp/wb ADMIN_PASSW
 | Type checks | `yarn test:typecheck` | root `tsc` covers `packages/` and `whiteboard-app/`; `tsc -p whiteboard-server` covers the server (Node types) |
 | Lint / format | `yarn test:code`, `yarn test:other` | eslint must report 0 warnings |
 | Browser smoke test | `yarn whiteboard:e2e <url> <admin> <password>` | `whiteboard-app/e2e/smoke.mjs`: two browsers + a guest, checks sync, pages, templates, PDF import, presenter, lock, embed, offline edits. Needs Playwright's Chromium (`npx playwright install chromium`) or `CHROMIUM_PATH=/path/to/chrome` |
+| Latency benchmark | `node whiteboard-app/e2e/latency.mjs <url> <admin> <password> [--slow] [--points=150]` | two browsers: one draws a stroke at ~60 Hz and drops a 735 KB screenshot, the other records arrivals. Prints delay per point (and where it goes), WebSocket bytes, image preview/full times. `--slow` adds a throttling proxy (50 ms each way, 1.5 / 6 Mbit/s) — Chrome's network throttling doesn't affect WebSockets |
 | Whole repo | `yarn test:update` | ~2700 tests, takes several minutes |
 
 ### Debug handle
@@ -40,6 +41,10 @@ With `localStorage.setItem("whiteboard-debug", "1")` the editor exposes `window.
 - **Double-click / Enter on an image starts cropping** in Excalidraw. Formulas are detected in `onChange` (`appState.croppingElementId`), cropping is cancelled and the math editor opens instead.
 - **Partial text colors while editing** are drawn by `.excalidraw-wysiwyg-colors` behind the textarea; its layout must match the textarea exactly (styles are copied in `updateColorLayer`).
 - **Browser tests on a reused paper** can read leftovers from earlier runs (same text, same place) — create a fresh paper per test.
+- **Chrome's network throttling (CDP / DevTools) doesn't slow down WebSockets.** `latency.mjs --slow` uses its own TCP proxy instead.
+- **`withBatchedUpdates` passes only the first argument** to the wrapped function — wrap an options object if you need more.
+- **An image whose file arrives before its element** isn't drawn until Excalidraw's next image refresh; `FileSync` calls `addFiles([])` once the element is there to load it right away.
+- **Stroke patches assume strokes only grow** (points appended, start unchanged). If Excalidraw ever rewrites points while drawing, `createPatch` notices (first/last point check) and the full element is sent — correct, just more bytes.
 
 ## Conventions
 
