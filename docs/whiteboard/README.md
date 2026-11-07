@@ -13,7 +13,7 @@ User-facing documentation (features, install, configuration) lives in [`/WHITEBO
 
 ## What exists (status)
 
-Everything below is implemented, tested and pushed on branch `claude/tender-bell-6d9kvw`:
+Everything below is implemented, tested and on `main`:
 
 - **Accounts**: admin creates people (one by one or many at once), resets passwords, disables/deletes accounts. Roles: `admin`, `member`.
 - **Papers**: created by admins, shared with chosen members; rename, duplicate (templates), delete; dashboard with cover thumbnails.
@@ -39,13 +39,15 @@ The original `excalidraw-app/` (excalidraw.com) is **untouched**. `packages/` ha
 ## Everyday commands
 
 ```bash
-yarn whiteboard:dev:server     # server on :3002 (data in whiteboard-server/data)
-yarn whiteboard:dev:app        # app on http://localhost:3003 (proxies to :3002)
+corepack enable && corepack yarn install   # once: dependencies come from yarn.lock (see development.md)
 
-yarn vitest run whiteboard-server   # server unit + integration tests (~6s)
-yarn test:typecheck                 # tsc for packages + app, and for the server
-yarn whiteboard:build               # production build (app + server bundle)
-yarn whiteboard:e2e http://localhost:3002 admin <password>   # browser smoke test
+npm run whiteboard:dev:server     # server on :3002 (data in whiteboard-server/data)
+npm run whiteboard:dev:app        # app on http://localhost:3003 (proxies to :3002)
+
+npx vitest run whiteboard-server  # server unit + integration tests (~7s)
+npm run test:typecheck            # tsc for packages + app, and for the server
+npm run whiteboard:build          # production build (app + server bundle)
+npm run whiteboard:e2e -- http://localhost:3002 admin <password>   # browser smoke test
 ```
 
-Before committing, the repo's usual checks apply (see `/CLAUDE.md`): `yarn test:typecheck`, `yarn test:code` (eslint, 0 warnings), `yarn test:other` (prettier) and `yarn test:update` (the whole vitest suite).
+`npm run <script>` and `yarn <script>` are interchangeable. Before committing, the repo's usual checks apply (see `/CLAUDE.md`): `npm run test:typecheck`, `npm run test:code` (eslint, 0 warnings), `npm run test:other` (prettier) and `npm run test:update` (the whole vitest suite).

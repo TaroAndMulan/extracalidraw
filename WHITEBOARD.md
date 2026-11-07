@@ -33,6 +33,11 @@ Open `https://<DOMAIN>` and sign in as `admin` with your `ADMIN_PASSWORD`.
 
 The first build takes a few minutes (it compiles the app); restarts are instant.
 
+### Try it on your computer first
+
+- **Without Docker** (just Node.js): follow [Without Docker](#without-docker) and open `http://localhost:3002`. Browsers treat `localhost` as secure, so no certificate is needed.
+- **With Docker**: set `DOMAIN=localhost` in `.env` and open `https://localhost`. Caddy uses its own certificate, so the browser warns until you trust it.
+
 ### Domain or IP address?
 
 The app needs HTTPS: browsers only allow clipboard access, image hashing and embedding into other HTTPS sites from secure pages. Caddy (included) handles certificates for you:
@@ -166,22 +171,25 @@ cd deploy && docker compose up -d --build
 
 ## Without Docker
 
-Requires Node.js 20+ and Yarn 1.
+Requires Node.js 20+. Dependencies are pinned in `yarn.lock` and installed with Yarn 1, which Corepack (part of Node.js) provides — all other commands use npm. Don't run `npm install`: it ignores `yarn.lock`.
 
 ```bash
-yarn install
-yarn whiteboard:build
-DATA_DIR=/var/lib/whiteboard ADMIN_PASSWORD=change-me yarn whiteboard:start
+corepack enable           # once: provides the Yarn version the scripts use
+corepack yarn install     # install dependencies (a few minutes the first time)
+npm run whiteboard:build
+DATA_DIR=/var/lib/whiteboard ADMIN_PASSWORD=change-me npm run whiteboard:start
 ```
 
-The server listens on port 3002 and serves the app itself; put it behind a reverse proxy for HTTPS (see the nginx example above). `whiteboard-server/dist/server.mjs` has no dependencies — together with `whiteboard-app/build` it's all you need to copy to a server (`STATIC_DIR=<path to build> node server.mjs`).
+The server listens on port 3002 (set `PORT=…` if that port is taken) and serves the app itself; put it behind a reverse proxy for HTTPS (see the nginx example above). `whiteboard-server/dist/server.mjs` has no dependencies — together with `whiteboard-app/build` it's all you need to copy to a server (`STATIC_DIR=<path to build> node server.mjs`).
 
 ### Development
 
 ```bash
-yarn whiteboard:dev:server   # API + live server on :3002 (data in whiteboard-server/data)
-yarn whiteboard:dev:app      # app with hot reload on http://localhost:3003
+npm run whiteboard:dev:server   # API + live server on :3002 (data in whiteboard-server/data)
+npm run whiteboard:dev:app      # app with hot reload on http://localhost:3003
 ```
+
+On another port: `PORT=3005 npm run whiteboard:dev:server` and `VITE_APP_WHITEBOARD_SERVER=http://localhost:3005 npm run whiteboard:dev:app`.
 
 ---
 

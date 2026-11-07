@@ -39,4 +39,5 @@ This fork adds a self-hosted multi-user whiteboard (accounts, papers with pages,
 
 - **Code**: `whiteboard-server/` (Node.js server), `whiteboard-app/` (React app using `packages/excalidraw`), `deploy/` (Docker Compose + Caddy). `excalidraw-app/` is unchanged; `packages/` only gained partial text colors (`colorRanges`, see `docs/whiteboard/decisions.md` → "Changes to packages/").
 - **Read first**: [`docs/whiteboard/README.md`](./docs/whiteboard/README.md) (architecture, protocol, testing, decisions). User docs: [`WHITEBOARD.md`](./WHITEBOARD.md).
-- **Checks**: `yarn vitest run whiteboard-server` (server unit + integration tests), `yarn test:typecheck` (also runs `tsc -p whiteboard-server`), and the browser smoke test `yarn whiteboard:e2e <url> <admin> <password>` against a running server.
+- **Commands**: use npm (`npm run <script>`, `npx …`) — every `yarn <script>` above works the same way. Dependencies stay on Yarn 1 + `yarn.lock` (upstream's): install with `corepack enable && corepack yarn install`, never `npm install` (no `package-lock.json`; it would re-resolve all versions).
+- **Checks**: `npx vitest run whiteboard-server` (server unit + integration tests), `npm run test:typecheck` (also runs `tsc -p whiteboard-server`), and the browser smoke test `npm run whiteboard:e2e -- <url> <admin> <password>` against a running server.
