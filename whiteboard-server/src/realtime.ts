@@ -106,6 +106,8 @@ const randomNonce = () => Math.floor(Math.random() * 2 ** 31);
 
 /** quick low-res versions of images shown while the full one uploads */
 const MAX_PREVIEW_BYTES = 512 * 1024;
+/** strokes one person can be drawing at once (fingers on a touch screen) */
+const MAX_DRAWING = 10;
 
 export const createDefaultPage = (index = "a0"): PageMeta => ({
   id: randomId(9),
@@ -787,10 +789,21 @@ export class PaperHub {
         ? ctx.live.applyPatches(pageId, patches)
         : { accepted: [], rejected: [] };
       if (accepted.length || patched.accepted.length) {
+        // strokes still being drawn, among those relayed
+        const relayed = new Set([
+          ...accepted.map((element) => element.id),
+          ...patched.accepted.map((patch) => patch.id),
+        ]);
+        const drawing = Array.isArray(data.drawing)
+          ? data.drawing
+              .filter((id): id is string => isValidId(id) && relayed.has(id))
+              .slice(0, MAX_DRAWING)
+          : null;
         socket.to(paperRoom(ctx.paper.id)).emit("paper:elements", {
           pageId,
           elements: accepted,
           ...(patched.accepted.length ? { patches: patched.accepted } : {}),
+          ...(drawing ? { drawing } : {}),
         });
       }
       if (patched.rejected.length) {

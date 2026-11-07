@@ -4,9 +4,12 @@
  * - The editor (Excalidraw) holds the elements of the *current* page; the
  *   other pages are kept here in memory, so switching pages is instant.
  * - Local changes are sent to the server as deltas (only elements whose
- *   version the server hasn't seen), throttled to ~30 messages/s.
+ *   version the server hasn't seen; a stroke being drawn: its new points),
+ *   the first right away, then at most one message per frame.
  * - Remote changes are reconciled with the same rules Excalidraw uses for its
- *   own collaboration, so concurrent edits converge everywhere.
+ *   own collaboration, so concurrent edits converge everywhere. Others'
+ *   strokes still being drawn are shown on a light overlay and go into the
+ *   page once finished (see liveStrokes.ts).
  * - After a reconnect the server sends its full state, we merge it and push
  *   whatever was drawn while offline.
  */
@@ -42,12 +45,14 @@ import type {
 } from "@excalidraw/excalidraw/types";
 import type {
   ExcalidrawElement,
+  ExcalidrawFreeDrawElement,
   OrderedExcalidrawElement,
 } from "@excalidraw/element/types";
 
 import { applyPatch } from "../../../whiteboard-server/src/reconcile";
 
 import { FileSync } from "./files";
+import { LiveStrokes } from "./liveStrokes";
 import { createPatch, snapshotElement } from "./strokePatches";
 import { createBackgroundElements } from "./importPages";
 
@@ -108,7 +113,25 @@ const SEND_INTERVAL_MS = 16;
 const CONGESTION_BYTES = 32 * 1024;
 /** ask again for an element that didn't come after this long */
 const FETCH_RETRY_MS = 3000;
-const POINTER_THROTTLE_MS = 33;
+/** cursor updates: hovering */
+const POINTER_INTERVAL_MS = 33;
+/** cursor updates while drawing: every frame, in step with the ink (the
+ * cursor would trail behind the pen tip on the others' screens) */
+const POINTER_DRAWING_INTERVAL_MS = 16;
+/** a stroke still being drawn that hasn't grown for this long goes into
+ * the page anyway (its author left or lost the connection) */
+const LIVE_STROKE_TIMEOUT_MS = 2000;
+
+/** debugging / benchmarks: `localStorage["whiteboard-live-strokes"] = "off"`
+ * puts others' strokes into the page with every update (as before
+ * liveStrokes.ts) */
+const isLiveStrokesOn = () => {
+  try {
+    return localStorage.getItem("whiteboard-live-strokes") !== "off";
+  } catch {
+    return true;
+  }
+};
 const IDLE_TIMEOUT_MS = 60_000;
 
 const isSyncableElement = (element: OrderedExcalidrawElement) => {
@@ -169,6 +192,12 @@ export const getPageLabel = (page: PageMeta, index: number) =>
 
 export type PaperSocket = Socket<ServerToClientEvents, ClientToServerEvents>;
 
+type PointerPayload = {
+  pointer: { x: number; y: number; tool: "pointer" | "laser" };
+  button: "down" | "up";
+  pointersMap: Gesture["pointers"];
+};
+
 export class PaperSession {
   private socket: PaperSocket | null = null;
   private api: ExcalidrawImperativeAPI | null = null;
@@ -193,6 +222,13 @@ export class PaperSession {
   private isRemoteFrameBusy = false;
   /** elements asked for in full (a patch didn't fit) → when */
   private fetching = new Map<string, number>();
+  /** others' strokes on this page while they draw them (see liveStrokes.ts) */
+  readonly liveStrokes = new LiveStrokes(() => this.api);
+  private readonly isLiveStrokesEnabled = isLiveStrokesOn();
+  private liveStrokeTimer: number | null = null;
+  private pendingPointer: PointerPayload | null = null;
+  private pointerTimer: number | null = null;
+  private lastPointerAt = 0;
   private lastSceneVersion = -1;
   private remotePointers = new Map<
     string,
@@ -232,7 +268,9 @@ export class PaperSession {
   private presenterOptOut = false;
   private listeners = new Set<() => void>();
   /** bumped whenever page contents change, for thumbnails */
-  private contentListeners = new Set<(pageId: string) => void>();
+  private contentListeners = new Set<
+    (pageId: string, origin: "local" | "remote") => void
+  >();
 
   constructor(
     readonly paperId: string,
@@ -275,17 +313,26 @@ export class PaperSession {
     }
   }
 
-  onPageContentChange = (listener: (pageId: string) => void) => {
+  /** a page's elements changed, here (`local`) or someone else's change */
+  onPageContentChange = (
+    listener: (pageId: string, origin: "local" | "remote") => void,
+  ) => {
     this.contentListeners.add(listener);
     return () => {
       this.contentListeners.delete(listener);
     };
   };
 
-  private emitContentChange(pageId: string) {
+  private emitContentChange(pageId: string, origin: "local" | "remote") {
     for (const listener of this.contentListeners) {
-      listener(pageId);
+      listener(pageId, origin);
     }
+  }
+
+  /** someone is drawing a stroke on this page (here or remotely): heavy
+   * work (thumbnails, the cover) should wait, see `runWhenQuiet` */
+  isDrawing() {
+    return !!this.api?.getAppState().newElement || this.liveStrokes.size > 0;
   }
 
   private refreshPages() {
@@ -338,8 +385,8 @@ export class PaperSession {
       this.setState({ status: this.hasJoined ? "reconnecting" : "connecting" });
     });
 
-    socket.on("paper:elements", ({ pageId, elements, patches }) =>
-      this.receiveRemote(pageId, elements, patches ?? []),
+    socket.on("paper:elements", ({ pageId, elements, patches, drawing }) =>
+      this.receiveRemote(pageId, elements, patches ?? [], drawing),
     );
     socket.on("paper:file", (meta, bytes) => {
       this.files.receive(
@@ -439,6 +486,13 @@ export class PaperSession {
     if (this.idleTimer) {
       window.clearTimeout(this.idleTimer);
     }
+    if (this.liveStrokeTimer !== null) {
+      window.clearInterval(this.liveStrokeTimer);
+    }
+    if (this.pointerTimer !== null) {
+      window.clearTimeout(this.pointerTimer);
+    }
+    this.liveStrokes.unmount();
   }
 
   private join() {
@@ -585,6 +639,9 @@ export class PaperSession {
         if (this.followers.length) {
           relay();
         }
+        if (this.liveStrokes.size) {
+          this.liveStrokes.scheduleRender();
+        }
       }),
       api.onUserFollow((payload) => this.onUserFollow(payload)),
       () => relay.cancel(),
@@ -676,6 +733,18 @@ export class PaperSession {
         captureUpdate: CaptureUpdateAction.NEVER,
       });
       this.files.sync(reconciled);
+      // strokes drawn on the overlay until now are in the page
+      if (this.liveStrokes.size) {
+        this.liveStrokes.release(
+          elements
+            .filter(
+              (element) =>
+                element.version >=
+                (this.liveStrokes.get(element.id)?.version ?? Infinity),
+            )
+            .map((element) => element.id),
+        );
+      }
     } else {
       this.pageElements.set(
         pageId,
@@ -686,13 +755,16 @@ export class PaperSession {
         ),
       );
     }
-    this.emitContentChange(pageId);
+    this.emitContentChange(pageId, "remote");
   }
 
   /** the server rejected our changes: take its state as is */
   private replacePage(pageId: string, elements: SyncedElement[]) {
     // (includes whatever was still queued for this page)
     this.pendingRemote.delete(pageId);
+    if (pageId === this.state.currentPageId) {
+      this.liveStrokes.clear();
+    }
     for (const element of elements) {
       this.serverVersions.set(element.id, element.version);
       this.sentSnapshots.delete(element.id);
@@ -710,7 +782,7 @@ export class PaperSession {
     } else {
       this.pageElements.set(pageId, restored);
     }
-    this.emitContentChange(pageId);
+    this.emitContentChange(pageId, "remote");
   }
 
   /** called by the editor on every change */
@@ -727,7 +799,7 @@ export class PaperSession {
       return;
     }
     this.lastSceneVersion = version;
-    this.emitContentChange(this.state.currentPageId);
+    this.emitContentChange(this.state.currentPageId, "local");
     if (this.state.canEdit) {
       this.scheduleSend();
       this.files.sync(elements);
@@ -768,10 +840,26 @@ export class PaperSession {
     if (!full.length && !patches.length) {
       return;
     }
+    // the stroke we're still drawing, if it's in the message: the others
+    // draw it on their overlay until it's finished (see liveStrokes.ts)
+    const hasStroke =
+      patches.length > 0 || full.some((element) => element.type === "freedraw");
+    const drawing =
+      pageId === this.state.currentPageId
+        ? this.api?.getAppState().newElement
+        : null;
     socket.emit("paper:elements", {
       pageId,
       elements: full as unknown as SyncedElement[],
       ...(patches.length ? { patches } : {}),
+      ...(hasStroke
+        ? {
+            drawing:
+              drawing?.type === "freedraw" && !drawing.isDeleted
+                ? [drawing.id]
+                : [],
+          }
+        : {}),
     });
   }
 
@@ -837,6 +925,7 @@ export class PaperSession {
     pageId: string,
     elements: SyncedElement[],
     patches: ElementPatch[],
+    drawing?: string[],
   ) {
     let pending = this.pendingRemote.get(pageId);
     if (!pending) {
@@ -861,6 +950,9 @@ export class PaperSession {
       for (const patch of patches) {
         const base =
           pending.get(patch.id) ??
+          (this.liveStrokes.get(patch.id) as unknown as
+            | SyncedElement
+            | undefined) ??
           (local.get(patch.id) as unknown as SyncedElement | undefined);
         const next = applyPatch(base, patch);
         if (next) {
@@ -877,11 +969,80 @@ export class PaperSession {
         this.socket?.emit("paper:fetch", { pageId, ids: missing });
       }
     }
+    // strokes still being drawn on this page: onto the overlay, not into the
+    // page (that would redraw every element on it for each new point)
+    if (
+      this.liveStrokes.size &&
+      pageId === this.state.currentPageId &&
+      this.api
+    ) {
+      // finished strokes go into the page with the next frame; meanwhile
+      // the overlay shows their last points right away
+      for (const element of pending.values()) {
+        if (
+          element.type === "freedraw" &&
+          this.liveStrokes.has(element.id) &&
+          !drawing?.includes(element.id)
+        ) {
+          this.liveStrokes.set(element as unknown as ExcalidrawFreeDrawElement);
+        }
+      }
+    }
+    if (
+      drawing?.length &&
+      pageId === this.state.currentPageId &&
+      this.api &&
+      this.isLiveStrokesEnabled
+    ) {
+      for (const id of drawing) {
+        const element = pending.get(id);
+        if (element?.type === "freedraw" && !element.isDeleted) {
+          pending.delete(id);
+          if (element.version > (this.serverVersions.get(id) ?? -1)) {
+            this.serverVersions.set(id, element.version);
+          }
+          this.liveStrokes.set(element as unknown as ExcalidrawFreeDrawElement);
+        }
+      }
+      this.watchLiveStrokes();
+    }
+    if (!pending.size) {
+      return;
+    }
     if (this.isRemoteFrameBusy) {
       this.isRemoteFlushScheduled = true;
     } else {
       this.flushRemote();
     }
+  }
+
+  /** puts strokes that stopped growing into the page (see
+   * LIVE_STROKE_TIMEOUT_MS) */
+  private watchLiveStrokes() {
+    if (this.liveStrokeTimer !== null) {
+      return;
+    }
+    this.liveStrokeTimer = window.setInterval(() => {
+      const pageId = this.state.currentPageId;
+      const stale = this.liveStrokes.stale(LIVE_STROKE_TIMEOUT_MS);
+      if (pageId && stale.length) {
+        this.applyRemoteElements(pageId, stale as unknown as SyncedElement[]);
+      }
+      if (!this.liveStrokes.size && this.liveStrokeTimer !== null) {
+        window.clearInterval(this.liveStrokeTimer);
+        this.liveStrokeTimer = null;
+      }
+    }, LIVE_STROKE_TIMEOUT_MS / 2);
+  }
+
+  /** others' strokes being drawn go into the page now (we leave it) */
+  private commitLiveStrokes() {
+    const pageId = this.state.currentPageId;
+    const strokes = this.liveStrokes.all();
+    if (pageId && strokes.length) {
+      this.applyRemoteElements(pageId, strokes as unknown as SyncedElement[]);
+    }
+    this.liveStrokes.clear();
   }
 
   /** applies remote changes waiting for the next frame */
@@ -1150,6 +1311,7 @@ export class PaperSession {
     // others just did is in
     this.sendNow();
     this.applyPendingRemote();
+    this.commitLiveStrokes();
 
     if (current) {
       const appState = api.getAppState();
@@ -1279,26 +1441,47 @@ export class PaperSession {
     this.api.updateScene({ collaborators });
   }
 
-  onPointerUpdate = throttle(
-    (payload: {
-      pointer: { x: number; y: number; tool: "pointer" | "laser" };
-      button: "down" | "up";
-      pointersMap: Gesture["pointers"];
-    }) => {
-      const pageId = this.state.currentPageId;
-      if (!this.socket?.connected || !pageId || payload.pointersMap.size > 1) {
-        return;
-      }
-      this.socket.volatile.emit("paper:pointer", {
-        pageId,
-        pointer: payload.pointer,
-        button: payload.button,
-        selectedElementIds: (this.api?.getAppState().selectedElementIds ??
-          {}) as Record<string, true>,
-      });
-    },
-    POINTER_THROTTLE_MS,
-  );
+  /** our cursor, for the others: always the newest position, at most every
+   * POINTER_INTERVAL_MS (every frame while drawing) */
+  onPointerUpdate = (payload: PointerPayload) => {
+    this.pendingPointer = payload;
+    if (this.pointerTimer !== null) {
+      return;
+    }
+    const interval =
+      payload.button === "down"
+        ? POINTER_DRAWING_INTERVAL_MS
+        : POINTER_INTERVAL_MS;
+    const wait = this.lastPointerAt + interval - performance.now();
+    if (wait <= 0) {
+      this.sendPointer();
+    } else {
+      this.pointerTimer = window.setTimeout(this.sendPointer, wait);
+    }
+  };
+
+  private sendPointer = () => {
+    this.pointerTimer = null;
+    const payload = this.pendingPointer;
+    this.pendingPointer = null;
+    const pageId = this.state.currentPageId;
+    if (
+      !payload ||
+      !this.socket?.connected ||
+      !pageId ||
+      payload.pointersMap.size > 1
+    ) {
+      return;
+    }
+    this.lastPointerAt = performance.now();
+    this.socket.volatile.emit("paper:pointer", {
+      pageId,
+      pointer: payload.pointer,
+      button: payload.button,
+      selectedElementIds: (this.api?.getAppState().selectedElementIds ??
+        {}) as Record<string, true>,
+    });
+  };
 
   private onUserFollow(payload: OnUserFollowedPayload) {
     const prev = this.state.userToFollow;

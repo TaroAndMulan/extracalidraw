@@ -586,6 +586,23 @@ const gesture: Gesture = {
   initialScale: null,
 };
 
+/**
+ * The positions a pen or finger reported up to this pointer event. Moves are
+ * handled once per frame, but an Apple Pencil reports 240 positions a second
+ * (browsers coalesce them into one event), so freedraw strokes take them all
+ * — otherwise fast handwriting turns angular. A mouse gives just the event.
+ */
+const getPointerSamples = (event: PointerEvent): readonly PointerEvent[] => {
+  if (
+    event.pointerType === "mouse" ||
+    typeof event.getCoalescedEvents !== "function"
+  ) {
+    return [event];
+  }
+  const samples = event.getCoalescedEvents();
+  return samples.length ? samples : [event];
+};
+
 class App extends React.Component<AppProps, AppState> {
   canvas: AppClassProperties["canvas"];
   interactiveCanvas: AppClassProperties["interactiveCanvas"] = null;
@@ -9390,25 +9407,26 @@ class App extends React.Component<AppProps, AppState> {
         }
 
         if (newElement.type === "freedraw") {
-          const points = newElement.points;
-          const dx = pointerCoords.x - newElement.x;
-          const dy = pointerCoords.y - newElement.y;
+          const points = [...newElement.points];
+          const pressures = [...newElement.pressures];
+          for (const sample of getPointerSamples(event)) {
+            const coords = viewportCoordsToSceneCoords(sample, this.state);
+            const dx = coords.x - newElement.x;
+            const dy = coords.y - newElement.y;
+            const lastPoint = points[points.length - 1];
+            if (lastPoint && lastPoint[0] === dx && lastPoint[1] === dy) {
+              continue;
+            }
+            points.push(pointFrom<LocalPoint>(dx, dy));
+            if (!newElement.simulatePressure) {
+              pressures.push(sample.pressure);
+            }
+          }
 
-          const lastPoint = points.length > 0 && points[points.length - 1];
-          const discardPoint =
-            lastPoint && lastPoint[0] === dx && lastPoint[1] === dy;
-
-          if (!discardPoint) {
-            const pressures = newElement.simulatePressure
-              ? newElement.pressures
-              : [...newElement.pressures, event.pressure];
-
+          if (points.length > newElement.points.length) {
             this.scene.mutateElement(
               newElement,
-              {
-                points: [...points, pointFrom<LocalPoint>(dx, dy)],
-                pressures,
-              },
+              { points, pressures },
               {
                 informMutation: false,
                 isDragging: false,

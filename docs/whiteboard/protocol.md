@@ -46,7 +46,7 @@ Client → server:
 | Event | Payload | Notes |
 | --- | --- | --- |
 | `paper:join` (ack) | `{ paperId, shareToken?, guest? }` | ack `{ ok, data: JoinPaperResult }`: pages, elements of all live pages, presence, permissions, presenter |
-| `paper:elements` | `{ pageId, elements, patches? }` | changed elements only; strokes being drawn as `patches` (see below); refused edits → `paper:resync` to the sender; patches that don't fit → `paper:resend` to the sender |
+| `paper:elements` | `{ pageId, elements, patches?, drawing? }` | changed elements only; strokes being drawn as `patches` and listed in `drawing` (see below); refused edits → `paper:resync` to the sender; patches that don't fit → `paper:resend` to the sender |
 | `paper:fetch` | `{ pageId, ids }` | asks for the current full elements (a received patch didn't fit the local copy) → `paper:elements` |
 | `paper:file` (ack) | `{ fileId, mimeType, preview? }`, bytes | an image over the live connection, passed on to the paper right away. Full files are stored too (ack `{ ok }` once stored); `preview: true` (≤ 512 KB) is only passed on |
 | `paper:pages` | `{ pages }` | changed page metas; refused deletes → full page list back to the sender |
@@ -59,7 +59,7 @@ Client → server:
 | `paper:lock` | `{ locked }` | managers |
 | `paper:present` | `{ on }` | managers: presenter mode |
 
-Server → client: `paper:elements` (`{ pageId, elements, patches? }`), `paper:resend` (`{ pageId, ids }`: send these in full), `paper:file` (`meta`, bytes), `paper:fileStored` (`{ fileId }`: an HTTP upload finished, download now), `paper:pages`, `paper:resync`, `paper:presence`, `paper:pointer`, `paper:idle`, `paper:followers`, `paper:viewport`, `paper:summon`, `paper:settings` (`{ locked, title }`), `paper:presenter`, `paper:removed` (paper deleted / access lost).
+Server → client: `paper:elements` (`{ pageId, elements, patches?, drawing? }`), `paper:resend` (`{ pageId, ids }`: send these in full), `paper:file` (`meta`, bytes), `paper:fileStored` (`{ fileId }`: an HTTP upload finished, download now), `paper:pages`, `paper:resync`, `paper:presence`, `paper:pointer`, `paper:idle`, `paper:followers`, `paper:viewport`, `paper:summon`, `paper:settings` (`{ locked, title }`), `paper:presenter`, `paper:removed` (paper deleted / access lost).
 
 Rooms: `paper:<id>` (everyone in a paper), `page:<paperId>:<pageId>` (cursors), `follow:<socketId>` (followers of a socket).
 
@@ -70,6 +70,12 @@ While someone draws, a freedraw element grows by one point per pointer move. Ins
 - Server: applies patches after the message's full elements; relays the accepted ones as `patches`; answers the others with `paper:resend` when it's missing what they build on (the sender forgets what it sent of them and sends them in full).
 - Receivers: apply a patch on top of the copy queued from the same burst or the one in the scene; when it doesn't fit, they `paper:fetch` the element.
 - Anything else (color changed, points rewritten, erase, undo) is sent as a full element.
+
+### Strokes still being drawn (`drawing`)
+
+A message with stroke changes carries `drawing`: the ids of the sender's strokes that are still being drawn (Excalidraw's `appState.newElement`; at most one). The server relays it filtered to valid ids of strokes it accepted in that message (at most 10), and leaves it out when the sender did (older clients).
+
+Receivers draw the listed strokes of the page they're on on an overlay instead of putting them into the page (which would redraw every element on it for each new point, see decisions.md → "Live strokes"). A stroke that is in a message but not in `drawing` is finished: it goes into the page, and the overlay drops its copy once the page has been redrawn. Strokes that stop growing for 2 s (author gone) go into the page anyway; switching pages and the server's full state (rejoin, resync) also put them there. Without `drawing`, everything goes into the page as before.
 
 ### Images
 

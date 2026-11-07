@@ -54,6 +54,11 @@ All ids are validated (`/^[A-Za-z0-9_-]{1,128}$/`) before touching the file syst
 | `editor/importPages.ts`, `templates.ts` | PDF (pdf.js, lazy) / image import and paper templates → pages with a locked background image. |
 | `editor/math.ts`, `MathDialog.tsx` | LaTeX → SVG (MathJax, lazy) and placing/updating formulas; the math editor dialog. Double-click/Enter on a formula is intercepted in `PaperEditor` (`croppingElementId`). |
 | `editor/thumbnails.ts`, `print.ts` | Page previews; print/PDF of all pages. |
+| `editor/liveStrokes.ts` | Others' strokes while they're drawn, on an overlay canvas; they go into the page once finished (protocol.md → "Strokes still being drawn"). |
+| `editor/tabletInput.ts` | Tablets: palm rejection, finger navigation, long press → context menu, two/three-finger tap → undo/redo, in front of the editor (window capture listeners); pen mode remembered per device. See decisions.md → "Pen, fingers and palms". |
+| `editor/PenTray.tsx` | The pen bar (pens, highlighter, eraser, "fingers draw" toggle) and `widenHighlighterStroke`. |
+| `editor/TopRight.tsx`, `fit.ts` | Math / Lock / Present / Pages at the top right, and `useFitLevel`, which makes the top bar and the footer (page bar + pens) more compact until they fit. |
+| `editor/device.ts` | Screen wake lock during lessons, full screen (incl. Safari's prefixed API). |
 | `editor/EmbedPage.tsx` | `/embed/<id>#token=…`: checks the link, asks guests for a name, opens the editor. |
 
 ### How the editor and the session share the work

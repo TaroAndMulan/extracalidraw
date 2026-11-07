@@ -743,6 +743,42 @@ a {
   height: 100%;
   width: 100%;
   position: relative;
+  // tablets: no "save image" sheet on a long press, no gray flash on taps
+  -webkit-touch-callout: none;
+  -webkit-tap-highlight-color: transparent;
+}
+
+// others' strokes while they draw them (liveStrokes.ts): above the page
+// canvas (z-index 1), level with Excalidraw's interactive canvas but before
+// it in the document (cursors and selections stay on top), below the UI.
+// Not z-index 1 "after the editor": React may insert the editor's root after
+// this canvas, which then ends up under the page.
+.wb-live-strokes {
+  position: absolute;
+  top: 0;
+  left: 0;
+  z-index: 2;
+  pointer-events: none;
+}
+
+// tablets: dragging on the toolbar or a panel must not pull-to-refresh
+// (Android) or bounce the page (iPad) in the middle of a lesson
+html:has(.wb-editor),
+html:has(.wb-editor) body {
+  overscroll-behavior: none;
+}
+
+// tablets: tapping a button twice quickly (next page, next page) must not
+// zoom the page on iPad
+button,
+a,
+input,
+select,
+textarea,
+label,
+[role="button"],
+[role="menuitem"] {
+  touch-action: manipulation;
 }
 
 .wb-topright {
@@ -750,6 +786,10 @@ a {
   align-items: center;
   gap: 0.4rem;
   pointer-events: all;
+
+  > * {
+    flex-shrink: 0;
+  }
 
   .wb-pages-trigger {
     svg {
@@ -795,6 +835,13 @@ a {
 
   &--warning {
     color: var(--wb-warning);
+  }
+
+  // icon only, when the top bar is short of room (see TopRight.tsx)
+  &--icon {
+    width: 2.25rem;
+    padding: 0;
+    justify-content: center;
   }
 }
 
@@ -881,17 +928,113 @@ a {
   &__count {
     color: var(--color-gray-50, var(--wb-muted));
     font-variant-numeric: tabular-nums;
+    white-space: nowrap;
   }
 
   &--compact {
     .wb-pagenav__label {
-      padding: 0 0.3rem;
+      gap: 0.3rem;
+      padding: 0 0.4rem;
       font-weight: 600;
+      white-space: nowrap;
+
+      svg {
+        width: 1rem;
+        height: 1rem;
+      }
     }
 
     .wb-pagenav__btn {
       width: 1.75rem;
     }
+  }
+}
+
+// the tightest top bar (narrow tablets in portrait, see TopRight.tsx):
+// Excalidraw's Library button (→ main menu) and separate laser button
+// (→ toolbar's ⋮ menu) make room too
+.excalidraw:has(.wb-topright--tight) {
+  .default-sidebar-trigger,
+  .Island:has(.ToolIcon__LaserPointer) {
+    display: none;
+  }
+
+  .App-menu_top {
+    grid-gap: 0.5rem;
+  }
+}
+
+// the page bar and the pens at the bottom
+.wb-footerbar {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+
+  // overflow (and go compact, see fit.ts) rather than squeeze
+  > * {
+    flex-shrink: 0;
+  }
+}
+
+.wb-pentray {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  padding: 2px;
+  border-radius: var(--border-radius-lg, 8px);
+  background: var(--island-bg-color, var(--wb-surface));
+  box-shadow: var(--shadow-island, var(--wb-shadow));
+  pointer-events: all;
+
+  &__btn {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 2rem;
+    height: 2rem;
+    padding: 0;
+    border: none;
+    border-radius: 6px;
+    background: transparent;
+    color: var(--text-primary-color, var(--wb-text));
+    cursor: pointer;
+
+    svg {
+      width: 1.15rem;
+      height: 1.15rem;
+    }
+
+    &:hover {
+      background: var(--button-hover-bg, var(--wb-surface-2));
+    }
+
+    &.is-active {
+      background: var(--color-primary-light, var(--wb-primary-soft));
+      color: var(--color-primary, var(--wb-primary));
+      box-shadow: inset 0 0 0 1px var(--color-primary, var(--wb-primary));
+    }
+  }
+
+  &__swatch {
+    width: 1.05rem;
+    height: 1.05rem;
+    border-radius: 50%;
+    box-shadow: inset 0 0 0 1px rgba(0, 0, 0, 0.15);
+    // the canvas shows colors inverted in dark mode; so do the swatches
+    filter: var(--theme-filter, none);
+  }
+
+  &__highlighter {
+    display: flex;
+    color: #f08c00;
+    filter: var(--theme-filter, none);
+  }
+
+  &__divider {
+    width: 1px;
+    align-self: stretch;
+    margin: 4px 3px;
+    background: var(--default-border-color, var(--wb-border));
   }
 }
 
@@ -943,6 +1086,12 @@ a {
 
     &:hover {
       background: var(--button-hover-bg);
+    }
+
+    &.is-active {
+      border-color: var(--color-primary);
+      background: var(--color-primary-light);
+      color: var(--color-primary);
     }
   }
 
@@ -1460,4 +1609,49 @@ a {
   font-family: "Times New Roman", serif;
   font-size: 1.15rem;
   line-height: 1;
+}
+
+// tablets: finger-sized targets for our own controls (Excalidraw sizes its
+// own UI for touch already)
+@media (pointer: coarse) {
+  .wb-pagenav {
+    .wb-pagenav__btn,
+    .wb-pagenav__label {
+      height: 2.5rem;
+    }
+
+    .wb-pagenav__btn {
+      width: 2.5rem;
+    }
+
+    &.wb-pagenav--compact .wb-pagenav__btn {
+      width: 2.25rem;
+    }
+  }
+
+  .wb-pill {
+    height: 2.5rem;
+  }
+
+  .wb-pill--icon {
+    width: 2.5rem;
+  }
+
+  .wb-pentray__btn {
+    width: 2.5rem;
+    height: 2.5rem;
+  }
+
+  .wb-page-item__menu-btn {
+    width: 2.25rem;
+    height: 2.25rem;
+  }
+
+  .wb-page-menu button {
+    padding: 0.7rem 0.75rem;
+  }
+
+  .wb-pages-sidebar .wb-pages__action {
+    padding: 0.55rem 0.75rem;
+  }
 }

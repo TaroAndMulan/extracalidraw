@@ -5,7 +5,13 @@ import { useEffect, useRef, useState, useSyncExternalStore } from "react";
 
 import { Avatar } from "../components/ui";
 
-import { magnetIcon, plusIcon } from "./icons";
+import {
+  lockIcon,
+  magnetIcon,
+  plusIcon,
+  presentIcon,
+  unlockIcon,
+} from "./icons";
 import { NewPageMenu } from "./NewPageMenu";
 import { getPageLabel } from "./session";
 
@@ -271,6 +277,8 @@ export const PagesSidebar = ({
 }) => {
   const { openSidebar } = useUIAppState();
   const isOpen = openSidebar?.name === PAGES_SIDEBAR;
+  const presenting = state.presenter?.socketId === state.socketId;
+  const locked = !!state.paper?.locked;
   const [draggingId, setDraggingId] = useState<string | null>(null);
   useSyncExternalStore(thumbnails.subscribe, thumbnails.getVersion);
 
@@ -314,6 +322,32 @@ export const PagesSidebar = ({
           </button>
         )}
       </div>
+      {state.canManage && (
+        <div className="wb-pages__actions">
+          <button
+            type="button"
+            className={clsx("wb-pages__action", { "is-active": presenting })}
+            onClick={() => session.setPresenting(!presenting)}
+            aria-pressed={presenting}
+            title="Everyone follows your view and page"
+          >
+            {presentIcon} {presenting ? "Stop presenting" : "Present"}
+          </button>
+          <button
+            type="button"
+            className={clsx("wb-pages__action", { "is-active": locked })}
+            onClick={() => session.setLocked(!locked)}
+            aria-pressed={locked}
+            title={
+              locked
+                ? "Only you (and admins) can draw. Click to let everyone draw."
+                : "Make the paper view-only for everyone else"
+            }
+          >
+            {locked ? lockIcon : unlockIcon} {locked ? "Unlock" : "Lock"}
+          </button>
+        </div>
+      )}
       <div className="wb-pages__list">
         {state.pages.map((page, index) => (
           <PageItem

@@ -30,12 +30,17 @@ VITE_APP_WHITEBOARD_SERVER=http://localhost:3005 npm run whiteboard:dev:app
 | Type checks | `npm run test:typecheck` | root `tsc` covers `packages/` and `whiteboard-app/`; `tsc -p whiteboard-server` covers the server (Node types) |
 | Lint / format | `npm run test:code`, `npm run test:other` | eslint must report 0 warnings |
 | Browser smoke test | `npm run whiteboard:e2e -- <url> <admin> <password>` | `whiteboard-app/e2e/smoke.mjs`: two browsers + a guest, checks sync, pages, templates, PDF import, presenter, lock, embed, offline edits. Needs Playwright's Chromium (`npx playwright install chromium`) or `CHROMIUM_PATH=/path/to/chrome` |
-| Latency benchmark | `node whiteboard-app/e2e/latency.mjs <url> <admin> <password> [--slow] [--points=150]` | two browsers: one draws a stroke at ~60 Hz and drops a 735 KB screenshot, the other records arrivals. Prints delay per point (and where it goes), WebSocket bytes, image preview/full times. `--slow` adds a throttling proxy (50 ms each way, 1.5 / 6 Mbit/s) — Chrome's network throttling doesn't affect WebSockets |
+| Tablet (pen, fingers, palm) | `npm run whiteboard:e2e:tablet -- <url> <admin> <password>` | `whiteboard-app/e2e/tablet.mjs`: an iPad-sized touch browser gets pen input (`Input.dispatchMouseEvent` with `pointerType: "pen"`) and finger touches (`Input.dispatchTouchEvent`) through the DevTools protocol — pen draws and turns pen mode on, a palm during a stroke changes nothing, fingers pan/pinch without drawing or selecting, fingers draw with pen mode off, pen mode survives a reload, a hovering pen turns it on, the pen bar and highlighter, two/three-finger taps undo/redo, long press (pen and finger) opens the menu, the screen wake lock, and that every button is on screen at seven tablet sizes (portrait and landscape). Unit tests: `tabletInput.test.ts`, `packages/excalidraw/tests/freedrawPenSamples.test.tsx` |
+| Latency benchmark | `node whiteboard-app/e2e/latency.mjs <url> <admin> <password> [--slow] [--points=150] [--elements=800] [--cpu=4] [--no-live-strokes]` | two browsers: one draws a stroke and drops a 735 KB screenshot, the other records, frame by frame, when points and the image are there to paint. Prints delay per point (and where it goes), cursor updates, WebSocket bytes, image preview/full times. `--slow` adds a throttling proxy (50 ms each way, 1.5 / 6 Mbit/s) — Chrome's network throttling doesn't affect WebSockets; `--elements` fills the page with notes first and `--cpu` slows both CPUs (a tablet) — that's where per-update work shows; `--no-live-strokes` compares with the old path. Run it against a production build (`npm run whiteboard:build`): the dev server is much slower |
 | Whole repo | `npm run test:update` | ~2700 tests, takes several minutes |
 
 ### Debug handle
 
-With `localStorage.setItem("whiteboard-debug", "1")` the editor exposes `window.__whiteboard = { session, excalidrawAPI }` — the smoke test uses it to read state (`session.getState()`, `excalidrawAPI.getSceneElements()`).
+With `localStorage.setItem("whiteboard-debug", "1")` the editor exposes `window.__whiteboard = { session, excalidrawAPI }` — the smoke test uses it to read state (`session.getState()`, `excalidrawAPI.getSceneElements()`, `session.liveStrokes.all()` for others' strokes still being drawn).
+
+`localStorage.setItem("whiteboard-live-strokes", "off")` makes this browser put others' strokes into the page with every update, as before `liveStrokes.ts` (for comparisons).
+
+**Profiling a slow device**: Chrome's DevTools protocol can slow the CPU (`Emulation.setCPUThrottlingRate`) and sample the main thread (`Profiler.start` / `Profiler.stop`); build the app with `vite build --minify false` to get readable function names.
 
 ## Gotchas (learned the hard way)
 
@@ -55,6 +60,12 @@ With `localStorage.setItem("whiteboard-debug", "1")` the editor exposes `window.
 - **Chrome's network throttling (CDP / DevTools) doesn't slow down WebSockets.** `latency.mjs --slow` uses its own TCP proxy instead.
 - **`withBatchedUpdates` passes only the first argument** to the wrapped function — wrap an options object if you need more.
 - **An image whose file arrives before its element** isn't drawn until Excalidraw's next image refresh; `FileSync` calls `addFiles([])` once the element is there to load it right away.
+- **Touch input is filtered before Excalidraw sees it** (`tabletInput.ts`, window listeners in the capture phase). If a touch seems to do nothing on the canvas, check pen mode (`excalidrawAPI.getAppState().penMode`) — in pen mode fingers only move the view. New window listeners added for touch handling run _after_ the filter, so they never see swallowed touches.
+- **Top bar / footer content must not shrink** (`flex-shrink: 0`): `useFitLevel` detects overflow, and squeezed content (an ellipsized page name, a wrapped "1 / 5") never overflows, so it would never go compact. The footer spans the screen with a padding, the top bar is inset — `fit.ts` measures against the padded edge.
+- **Others' strokes being drawn aren't in the scene** (`excalidrawAPI.getSceneElements()`) until they're finished — they're on `session.liveStrokes`. Code that needs "everything on the page right now" must look at both.
+- **Something heavy on the main thread stalls everyone's strokes on that screen** (incoming messages wait). Run it through `runWhenQuiet` (thumbnails.ts) and measure with `latency.mjs --elements=800 --cpu=4`.
+- **Our own synthetic events** (`contextmenu` for the long press, `pointerdown` on `<body>` to close menus) pass through `tabletInput.ts`'s listeners too; it ignores them while `dispatching` is set.
+- **Chrome can't emulate a pen from DevTools' device toolbar**, but the protocol can: `Input.dispatchMouseEvent` with `pointerType: "pen"` (see `e2e/tablet.mjs`). Pen and touch can be mixed in one test (a palm during a stroke).
 - **Stroke patches assume strokes only grow** (points appended, start unchanged). If Excalidraw ever rewrites points while drawing, `createPatch` notices (first/last point check) and the full element is sent — correct, just more bytes.
 
 ## Conventions

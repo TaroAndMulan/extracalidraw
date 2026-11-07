@@ -10,8 +10,10 @@ This fork adds a self-hosted, multi-user whiteboard built on the Excalidraw edit
 - **Embed on other websites**: turn on a paper's public link and paste the `<iframe>` code into any page — visitors join live without an account.
 - **LaTeX math**: insert formulas (_∑ Math_ or <kbd>Alt</kbd>+<kbd>M</kbd>) with a live preview and buttons for common structures and symbols; double-click a formula to edit it.
 - **Colored words**: while editing a text, select part of it and pick a color — only those words change color.
+- **Tablets with a pen** (iPad + Apple Pencil, Samsung/Android + S Pen): the pen writes — smoothly, with every point the pen reports — fingers pan and pinch-zoom, a hand resting on the screen while writing is ignored (palm rejection), two-finger tap undoes. Tablets without a pen draw with a finger. The screen stays on during a lesson.
+- **Pen bar**: one tap for a black, red, blue or green pen, a highlighter or the eraser.
 - **Images**, export of a page as PNG/SVG/`.excalidraw`, and **Print / PDF of all pages**.
-- **Fast, also on weak connections**: what you write reaches the others as you write it — in step with your voice — with only the network delay added (strokes send just their new points; a slow link never piles up stale updates). A pasted screenshot shows up for others right away as a quick preview and sharpens once fully loaded. A single small Node.js process keeps open papers in memory; the app is served compressed and cached.
+- **Fast, also on weak connections and full pages**: what you write reaches the others as you write it — in step with your voice — with only the network delay added (strokes send just their new points; a slow link never piles up stale updates; a stroke being drawn is shown on its own layer, so a page full of notes on a tablet keeps up; your cursor follows your pen). A pasted screenshot shows up for others right away as a quick preview and sharpens once fully loaded. A single small Node.js process keeps open papers in memory; the app is served compressed and cached.
 
 Everything — accounts, papers, images — stays on your own server.
 
@@ -74,10 +76,19 @@ location / {
 1. **Add people** — _People_ → _Add person_, or _Add many…_ to paste a list of names (one per line) and get usernames and passwords for everyone (copy or download as CSV). Admins can reset passwords, disable or delete accounts any time.
 2. **Create a paper** — _Papers_ → _New paper_, pick who it's shared with. `⋯` on a paper lets you rename it, change who it's shared with, set up the public link/embed, duplicate it (great for reusable worksheets/templates) or delete it.
 3. **Pages** — the page bar at the bottom (`‹ Page 2 / 5 › +`) and the _Pages_ panel (top right; pin it to keep it open). _New page ▾_ offers blank, lined, grid and dotted paper, and **Import PDF or images…** (or drop a PDF onto the canvas). Imported backgrounds are locked; right-click → _Unlock_ to move them. Everyone who can draw may add, rename and reorder pages; only the owner and admins delete them.
-4. **Run a session** — top right: _Present_ (everyone follows your view and page until you stop; anyone can step out with ✕ on the “… is presenting” badge), _Lock_ (view-only for everyone else), and in the _Pages_ panel _Bring everyone here_. Click someone's avatar to follow them.
+4. **Run a session** — top right, and always in the _Pages_ panel: _Present_ (everyone follows your view and page until you stop; anyone can step out with ✕ on the “… is presenting” badge) and _Lock_ (view-only for everyone else); in the _Pages_ panel also _Bring everyone here_. Click someone's avatar to follow them. On smaller screens the top-right buttons shrink to icons, then make way (Present/Lock stay in the _Pages_ panel, Math and Library in the menu ☰, the page bar opens the _Pages_ panel).
 5. **Math** — _∑ Math_ (top right), <kbd>Alt</kbd>+<kbd>M</kbd> or menu → _Insert math (LaTeX)_. Type LaTeX (e.g. `\frac{a}{b}`, `x^2`, `\sqrt{x}`) or use the buttons, pick a color and size, then _Insert_ (<kbd>Ctrl</kbd>+<kbd>Enter</kbd>). Double-click a formula (or select it and press <kbd>Enter</kbd>) to change it. Chemistry works too: `\ce{H2O}`.
 6. **Color part of a text** — double-click a text to edit it, select the words, then click a color in the panel on the left. Picking the text's own color removes the coloring. New text you type continues the color of the character before it.
 7. **Print / PDF** — menu (☰) → _Print / PDF (all pages)_; choose “Save as PDF” in the print dialog.
+8. **Pen bar** — at the bottom, next to the page bar: black, red, blue and green pens, a **highlighter** (wide, see-through yellow) and the **eraser**, one tap each. On narrow screens it shows fewer colors (the full palette is in the panel on the left).
+9. **Tablets & pens** — as soon as a pen touches (or hovers over) the screen, the whiteboard switches to _pen mode_:
+
+   - the **pen** draws, selects, erases — everything a mouse does (double-tap a text or formula with the pen to edit it); hold it still for half a second with the selection tool for the menu (copy, paste, _Unlock_…);
+   - **one finger** moves the page, **two fingers** pinch to zoom; fingers never draw or select on the canvas, but work as usual on buttons and panels. A finger held still with the selection tool also opens the menu;
+   - **tap with two fingers to undo, with three to redo**;
+   - your **palm** can rest on the screen while you write: touches while the pen is down (and just after it lifts) are ignored, so the stroke isn't cut and the page doesn't slide.
+
+   The hand button at the end of the pen bar (it appears once a pen was used) lets fingers draw too, and turns pen mode back on; the pen button in Excalidraw's toolbar does the same. The choice is remembered on that device, so the next lesson starts in the same mode. Tablets without a pen (e.g. a student's tablet) simply draw with a finger. While someone else is in the paper, the screen doesn't dim or lock (needs HTTPS). Menu (☰) → _Full screen_ hides the browser's bars. Made for Safari on iPad and Chrome or Samsung Internet on Android. Pages can be reordered on a tablet with `⋯` → _Move up / Move down_ in the _Pages_ panel.
 
 Each person's own preferences (theme, language, shape library) stay in their browser.
 
@@ -211,8 +222,11 @@ browser ──HTTPS──▶ Caddy ──▶ whiteboard-server (Node.js, one pro
 
 - **“Reconnecting…” never goes away** — your proxy doesn't pass WebSockets (see the nginx example), or a firewall blocks them.
 - **Logged in, but papers won't open (“live connection was refused”)** — the proxy drops cookies or changes the `Host` header on WebSocket requests.
+- **Strokes arrive late for everyone** — it's the network: host the server close to you and your students (same country/region), as each stroke travels to the server and back out. The app itself adds only a few milliseconds.
 - **Browser warns about the certificate** — expected when `DOMAIN` is an IP address; use a domain name for a trusted certificate.
 - **An embed shows “refused to connect”** — the site isn't listed in `EMBED_ALLOWED_ORIGINS`, or the page isn't served over HTTPS.
+- **On a tablet, my finger doesn't draw** — pen mode is on (a pen was used on this device). Tap the hand button at the end of the pen bar to let fingers draw.
+- **On a tablet, the page doesn't move right after writing** — a finger touching within half a second after the pen lifts counts as the palm; lift and try again.
 - Logs: `docker compose logs -f whiteboard`.
 
 ---

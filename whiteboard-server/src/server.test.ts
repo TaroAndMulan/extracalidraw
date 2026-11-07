@@ -366,6 +366,43 @@ describe("whiteboard server: real-time", () => {
     expect(state.elements[pageId][0]).toMatchObject({ version: 2 });
   });
 
+  it("relays which strokes are still being drawn", async () => {
+    const admin = connect(adminCookie);
+    const maya = connect(memberCookie);
+    const joined = await joinOk(admin, paper.id);
+    await joinOk(maya, paper.id);
+    const pageId = joined.pages[0].id;
+    const stroke = (id: string, version: number) =>
+      element(id, version, {
+        type: "freedraw",
+        points: [[0, 0]],
+        pressures: [],
+      });
+
+    let relayed = next(maya, "paper:elements");
+    admin.emit("paper:elements", {
+      pageId,
+      elements: [stroke("live", 1)],
+      // ids not in the message, or invalid, are dropped
+      drawing: ["live", "elsewhere", "../bad"],
+    });
+    expect((await relayed).drawing).toEqual(["live"]);
+
+    // finished: in the message, not listed
+    relayed = next(maya, "paper:elements");
+    admin.emit("paper:elements", {
+      pageId,
+      elements: [stroke("live", 2)],
+      drawing: [],
+    });
+    expect((await relayed).drawing).toEqual([]);
+
+    // older clients don't send it: neither does the relay
+    relayed = next(maya, "paper:elements");
+    admin.emit("paper:elements", { pageId, elements: [stroke("live", 3)] });
+    expect((await relayed).drawing).toBeUndefined();
+  });
+
   it("people outside the paper can't join it", async () => {
     const omar = connect(otherCookie);
     const result = await join(omar, paper.id);

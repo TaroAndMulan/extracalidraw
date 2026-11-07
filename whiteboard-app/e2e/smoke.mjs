@@ -88,6 +88,31 @@ const until = async (page, predicate, timeout = 8000) => {
   }
 };
 
+/** dark ("ink") pixels on screen in a region (light theme) */
+const inkPixels = async (page, clip) => {
+  const shot = await page.screenshot({ clip });
+  return page.evaluate(async (src) => {
+    const image = new Image();
+    await new Promise((resolve) => {
+      image.onload = resolve;
+      image.src = src;
+    });
+    const canvas = document.createElement("canvas");
+    canvas.width = image.width;
+    canvas.height = image.height;
+    const context = canvas.getContext("2d");
+    context.drawImage(image, 0, 0);
+    const { data } = context.getImageData(0, 0, canvas.width, canvas.height);
+    let ink = 0;
+    for (let i = 0; i < data.length; i += 4) {
+      if (data[i] < 100 && data[i + 1] < 100 && data[i + 2] < 100) {
+        ink++;
+      }
+    }
+    return ink;
+  }, `data:image/png;base64,${shot.toString("base64")}`);
+};
+
 const draw = async (page, tool, x, y) => {
   await page.keyboard.press("Escape");
   await page.keyboard.press(tool);
@@ -163,6 +188,52 @@ const run = async () => {
     let a = await until(admin, (s) => s.types.includes("ellipse"));
     check("admin sees the member's drawing", a.types.includes("ellipse"));
 
+    // a stroke being drawn: on the others' live overlay while it grows (not
+    // redrawing their whole page for each point), in the page once finished
+    const liveState = () =>
+      maya.evaluate(() => {
+        const { session, excalidrawAPI } = window.__whiteboard;
+        const live = session.liveStrokes.all();
+        return {
+          live: live.length,
+          livePoints: live[0]?.points.length ?? 0,
+          inPage: excalidrawAPI
+            .getSceneElements()
+            .filter((e) => e.type === "freedraw").length,
+        };
+      });
+    await admin.keyboard.press("Escape");
+    await admin.keyboard.press("p");
+    await admin.mouse.move(400, 600);
+    await admin.mouse.down();
+    for (let i = 1; i <= 15; i++) {
+      await admin.mouse.move(400 + i * 12, 600 + (i % 3) * 8);
+      await sleep(16);
+    }
+    await sleep(300);
+    const whileDrawing = await liveState();
+    // and it's actually on the screen (not hidden under the page)
+    whileDrawing.ink = await inkPixels(maya, {
+      x: 410,
+      y: 590,
+      width: 170,
+      height: 40,
+    });
+    await admin.mouse.up();
+    await admin.keyboard.press("Escape");
+    await sleep(800);
+    const afterDrawing = await liveState();
+    check(
+      "a stroke being drawn shows live, then lands in the page",
+      whileDrawing.live === 1 &&
+        whileDrawing.livePoints >= 10 &&
+        whileDrawing.ink > 100 &&
+        whileDrawing.inPage === 0 &&
+        afterDrawing.live === 0 &&
+        afterDrawing.inPage === 1,
+      JSON.stringify({ whileDrawing, afterDrawing }),
+    );
+
     // partial text colors: color one word while editing
     await admin.keyboard.press("t");
     await admin.mouse.click(450, 520);
@@ -174,15 +245,18 @@ const run = async () => {
     );
     await admin.click('[data-testid="color-top-pick-#e03131"]');
     await admin.keyboard.press("Escape");
-    const colored = await maya.waitForFunction(
-      () =>
-        window.__whiteboard.excalidrawAPI
-          .getSceneElements()
-          .find((e) => e.type === "text" && e.colorRanges?.length)
-          ?.colorRanges,
-      null,
-      { timeout: 8000 },
-    ).then((handle) => handle.jsonValue()).catch(() => null);
+    const colored = await maya
+      .waitForFunction(
+        () =>
+          window.__whiteboard.excalidrawAPI
+            .getSceneElements()
+            .find((e) => e.type === "text" && e.colorRanges?.length)
+            ?.colorRanges,
+        null,
+        { timeout: 8000 },
+      )
+      .then((handle) => handle.jsonValue())
+      .catch(() => null);
     check(
       "a word colored separately reaches the member",
       colored?.[0]?.start === 10 && colored?.[0]?.end === 11,
@@ -194,20 +268,23 @@ const run = async () => {
     await admin.click(".wb-math__example");
     await admin.waitForSelector(".wb-math__preview img", { timeout: 15000 });
     await admin.click("button:has-text('Insert')");
-    const math = await maya.waitForFunction(
-      () => {
-        const { excalidrawAPI } = window.__whiteboard;
-        const element = excalidrawAPI
-          .getSceneElements()
-          .find((e) => e.customData?.whiteboardMath);
-        return element?.status === "saved" &&
-          excalidrawAPI.getFiles()[element.fileId]
-          ? element.customData.whiteboardMath.latex
-          : null;
-      },
-      null,
-      { timeout: 10000 },
-    ).then((handle) => handle.jsonValue()).catch(() => null);
+    const math = await maya
+      .waitForFunction(
+        () => {
+          const { excalidrawAPI } = window.__whiteboard;
+          const element = excalidrawAPI
+            .getSceneElements()
+            .find((e) => e.customData?.whiteboardMath);
+          return element?.status === "saved" &&
+            excalidrawAPI.getFiles()[element.fileId]
+            ? element.customData.whiteboardMath.latex
+            : null;
+        },
+        null,
+        { timeout: 10000 },
+      )
+      .then((handle) => handle.jsonValue())
+      .catch(() => null);
     check("a LaTeX formula reaches the member", !!math, String(math));
     await admin.keyboard.press("Escape");
 
@@ -227,7 +304,10 @@ const run = async () => {
     await admin.click(".wb-newpage .wb-pages__action");
     await admin.click(".wb-newpage__menu >> text=Lined paper");
     a = await until(admin, (s) => s.images[0] === "saved");
-    check("lined paper page with an uploaded background", a.images[0] === "saved");
+    check(
+      "lined paper page with an uploaded background",
+      a.images[0] === "saved",
+    );
 
     // PDF import
     const maker = await browser.newPage();
@@ -264,11 +344,19 @@ const run = async () => {
     // presenter mode
     await admin.click("button.wb-pill--button:has-text('Present')");
     m = await until(maya, (s) => s.following !== null && s.page === a.page);
-    check("presenter mode: member follows", m.following !== null && m.page === a.page, JSON.stringify(m));
+    check(
+      "presenter mode: member follows",
+      m.following !== null && m.page === a.page,
+      JSON.stringify(m),
+    );
     await admin.keyboard.press("Alt+PageUp");
     const adminPage = (await state(admin)).page;
     m = await until(maya, (s) => s.page === adminPage);
-    check("presenter mode: member follows page changes", m.page === adminPage, JSON.stringify(m));
+    check(
+      "presenter mode: member follows page changes",
+      m.page === adminPage,
+      JSON.stringify(m),
+    );
     await admin.click("button.wb-pill--button:has-text('Presenting')");
 
     // lock
@@ -293,7 +381,10 @@ const run = async () => {
       session.switchPage(session.getState().pages[index].id);
     }, guestPage);
     await draw(guest, "r", 300, 500);
-    a = await until(admin, (s) => s.types.filter((t) => t === "rectangle").length >= 2);
+    a = await until(
+      admin,
+      (s) => s.types.filter((t) => t === "rectangle").length >= 2,
+    );
     check(
       "guest joins through the embed link and draws",
       a.types.filter((t) => t === "rectangle").length >= 2,
@@ -309,7 +400,10 @@ const run = async () => {
     await draw(maya, "d", 600, 520);
     await maya.evaluate(() => window.__whiteboard.session.socket.connect());
     a = await until(admin, (s) => s.types.includes("diamond"));
-    check("offline drawing arrives after reconnecting", a.types.includes("diamond"));
+    check(
+      "offline drawing arrives after reconnecting",
+      a.types.includes("diamond"),
+    );
   } finally {
     await browser.close();
   }
@@ -322,6 +416,8 @@ run()
     failures++;
   })
   .finally(() => {
-    console.log(failures ? `\n${failures} check(s) failed` : "\nall checks passed");
+    console.log(
+      failures ? `\n${failures} check(s) failed` : "\nall checks passed",
+    );
     process.exit(failures ? 1 : 0);
   });

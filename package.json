@@ -99,7 +99,8 @@
     "whiteboard:start": "yarn --cwd ./whiteboard-server start",
     "whiteboard:dev:server": "yarn --cwd ./whiteboard-server dev",
     "whiteboard:dev:app": "yarn --cwd ./whiteboard-app start",
-    "whiteboard:e2e": "node whiteboard-app/e2e/smoke.mjs"
+    "whiteboard:e2e": "node whiteboard-app/e2e/smoke.mjs",
+    "whiteboard:e2e:tablet": "node whiteboard-app/e2e/tablet.mjs"
   },
   "resolutions": {
     "strip-ansi": "6.0.1"

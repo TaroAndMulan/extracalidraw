@@ -3,6 +3,7 @@
  * Measures how fast work shows up on someone else's screen.
  *
  *   node whiteboard-app/e2e/latency.mjs <url> <admin> <password> [--slow] [--points=150]
+ *     [--elements=800] [--cpu=4]
  *
  * Two browsers open the same paper. One draws a stroke (150 points at
  * ~60 Hz) and drops a screenshot-sized PNG; the other records when each
@@ -10,6 +11,11 @@
  * bytes, and the image delay. `--slow` puts a throttling proxy between the
  * browsers and the server (50 ms each way, 1.5 Mbit/s up, 6 Mbit/s down per
  * connection) — Chrome's own throttling doesn't apply to WebSockets.
+ * `--elements=N` fills the page with N handwriting strokes first (a page of
+ * notes: the work per message grows with what's on the page), `--cpu=N`
+ * slows both browsers' CPU down N times (a tablet rather than a laptop).
+ * `--no-live-strokes` makes the viewer put strokes into the page with every
+ * update, as before `liveStrokes.ts` (to compare).
  *
  * Needs Playwright's Chromium (or CHROMIUM_PATH), like smoke.mjs.
  */
@@ -29,9 +35,14 @@ if (!PASSWORD) {
   process.exit(2);
 }
 
-const POINTS = Number(
-  args.find((arg) => arg.startsWith("--points="))?.split("=")[1] ?? 150,
-);
+const option = (name, fallback) =>
+  Number(
+    args.find((arg) => arg.startsWith(`--${name}=`))?.split("=")[1] ?? fallback,
+  );
+const POINTS = option("points", 150);
+const ELEMENTS = option("elements", 0);
+const CPU = option("cpu", 1);
+const NO_LIVE_STROKES = args.includes("--no-live-strokes");
 const INTERVAL_MS = 16;
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -126,10 +137,13 @@ const run = async () => {
     const context = await browser.newContext({
       viewport: { width: 1280, height: 800 },
     });
-    await context.addInitScript(() => {
+    await context.addInitScript((noLiveStrokes) => {
       localStorage.setItem("whiteboard-debug", "1");
+      if (noLiveStrokes) {
+        localStorage.setItem("whiteboard-live-strokes", "off");
+      }
       // when element messages leave / arrive (for the delay breakdown)
-      const log = { sent: [], received: [], moves: [] };
+      const log = { sent: [], received: [], moves: [], cursors: [] };
       window.__wsLog = log;
       window.addEventListener(
         "pointermove",
@@ -142,6 +156,11 @@ const run = async () => {
       WebSocket.prototype.send = function (data) {
         if (isElements(data)) {
           log.sent.push(Date.now());
+        } else if (
+          typeof data === "string" &&
+          data.includes('"paper:pointer"')
+        ) {
+          log.cursors.push(Date.now());
         }
         return send.call(this, data);
       };
@@ -157,7 +176,7 @@ const run = async () => {
           });
         }
       };
-    });
+    }, NO_LIVE_STROKES);
     const [name, value] = cookie.split("=");
     await context.addCookies([{ name, value, url: BASE }]);
     const page = await context.newPage();
@@ -176,22 +195,101 @@ const run = async () => {
       timeout: 30000,
     });
     await sleep(800);
-    return { page, bytes };
+    return { page, bytes, cdp };
   };
 
   try {
     const sender = await open(adminCookie);
     const receiver = await open(await login(memberName, "latency-pass"));
 
-    // the receiver records when stroke points and images arrive
+    if (ELEMENTS) {
+      // a page of handwriting: short wavy strokes in rows
+      await sender.page.evaluate((count) => {
+        const { excalidrawAPI } = window.__whiteboard;
+        const now = Date.now();
+        const strokes = [];
+        for (let i = 0; i < count; i++) {
+          const points = [];
+          for (let j = 0; j < 40; j++) {
+            points.push([j * 2, Math.sin((i + j) / 3) * 8]);
+          }
+          strokes.push({
+            id: `note-${now}-${i}`,
+            type: "freedraw",
+            x: 40 + (i % 30) * 40,
+            y: 40 + Math.floor(i / 30) * 22,
+            width: 78,
+            height: 16,
+            angle: 0,
+            strokeColor: "#1e1e1e",
+            backgroundColor: "transparent",
+            fillStyle: "solid",
+            strokeWidth: 1,
+            strokeStyle: "solid",
+            roughness: 1,
+            opacity: 100,
+            groupIds: [],
+            frameId: null,
+            roundness: null,
+            seed: i + 1,
+            version: 2,
+            versionNonce: i + 7,
+            isDeleted: false,
+            boundElements: null,
+            updated: now,
+            link: null,
+            locked: false,
+            index: null,
+            points,
+            pressures: [],
+            simulatePressure: true,
+            lastCommittedPoint: null,
+          });
+        }
+        excalidrawAPI.updateScene({
+          elements: [
+            ...excalidrawAPI.getSceneElementsIncludingDeleted(),
+            ...strokes,
+          ],
+        });
+      }, ELEMENTS);
+      await receiver.page.waitForFunction(
+        (count) =>
+          window.__whiteboard.excalidrawAPI.getSceneElements().length >= count,
+        ELEMENTS,
+        { timeout: 60000 },
+      );
+      await sleep(1000);
+    }
+    if (CPU > 1) {
+      for (const { cdp } of [sender, receiver]) {
+        await cdp.send("Emulation.setCPUThrottlingRate", { rate: CPU });
+      }
+    }
+
+    // the receiver records, frame by frame, when stroke points and images
+    // are there to be painted (a receiver busy redrawing gets fewer, later
+    // frames — that shows here)
     await receiver.page.evaluate(() => {
       const record = { strokes: [], images: {} };
       window.__latency = record;
       let lastLength = 0;
-      setInterval(() => {
-        const { excalidrawAPI } = window.__whiteboard;
+      // only the stroke drawn from now on (not what's on the page already)
+      const known = new Set(
+        window.__whiteboard.excalidrawAPI
+          .getSceneElementsIncludingDeleted()
+          .map((element) => element.id),
+      );
+      const isNew = (element) =>
+        element.type === "freedraw" && !known.has(element.id);
+      const onFrame = () => {
+        requestAnimationFrame(onFrame);
+        const { excalidrawAPI, session } = window.__whiteboard;
         const elements = excalidrawAPI.getSceneElements();
-        const stroke = elements.findLast((e) => e.type === "freedraw");
+        // strokes still being drawn are on the live overlay
+        const stroke =
+          session.liveStrokes?.all().findLast(isNew) ??
+          elements.findLast(isNew);
         if (stroke && stroke.points.length !== lastLength) {
           lastLength = stroke.points.length;
           record.strokes.push([Date.now(), lastLength]);
@@ -215,7 +313,8 @@ const run = async () => {
             seen.length = file.dataURL.length;
           }
         }
-      }, 2);
+      };
+      requestAnimationFrame(onFrame);
     });
 
     // ---- ink ---------------------------------------------------------------
@@ -252,6 +351,9 @@ const run = async () => {
       }
     }
     const finalArrival = strokes[strokes.length - 1]?.[0];
+    const cursorUpdates = (
+      await sender.page.evaluate(() => window.__wsLog.cursors)
+    ).filter((t) => t >= sentAt[0] && t <= upAt).length;
     // where the time goes: input → sent, sent → received, received → shown
     const senderLog = await sender.page.evaluate(() => window.__wsLog.sent);
     const moves = await sender.page.evaluate(() => window.__wsLog.moves);
@@ -280,8 +382,12 @@ const run = async () => {
     const receivedBytes = receiver.bytes.received - beforeReceived;
 
     console.log(
-      `\nInk (${POINTS} points at ~${Math.round(1000 / INTERVAL_MS)} Hz${
-        slow ? ", slow network" : ""
+      `\nInk (${POINTS} points at ${Math.round(
+        (POINTS * 1000) / (upAt - sentAt[0]),
+      )} Hz${slow ? ", slow network" : ""}${
+        ELEMENTS ? `, ${ELEMENTS} strokes on the page` : ""
+      }${CPU > 1 ? `, CPU ${CPU}× slower` : ""}${
+        NO_LIVE_STROKES ? ", without live strokes" : ""
       })`,
     );
     console.log(
@@ -306,6 +412,11 @@ const run = async () => {
     );
     console.log(`  last point after pen up: ${finalArrival - upAt} ms`);
     console.log(`  updates seen by the viewer: ${strokes.length}`);
+    console.log(
+      `  cursor updates sent while drawing: ${cursorUpdates} (${Math.round(
+        (cursorUpdates * 1000) / (upAt - sentAt[0]),
+      )}/s)`,
+    );
     console.log(
       `  WebSocket bytes: sender ${Math.round(
         sentBytes / 1024,

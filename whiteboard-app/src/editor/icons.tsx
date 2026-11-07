@@ -81,3 +81,38 @@ export const presentIcon = icon(
     <path d="M10 8l4 2l-4 2z" />
   </>,
 );
+
+export const highlighterIcon = icon(
+  <>
+    <path d="M3 19h4l10.5 -10.5a2.828 2.828 0 1 0 -4 -4l-10.5 10.5v4" />
+    <path d="M12.5 5.5l4 4" />
+    <path d="M4.5 13.5l4 4" />
+    <path d="M21 15v4h-8l4 -4z" />
+  </>,
+);
+
+export const eraserIcon = icon(
+  <>
+    <path d="M19 20h-10.5l-4.21 -4.3a1 1 0 0 1 0 -1.41l10 -10a1 1 0 0 1 1.41 0l5 5a1 1 0 0 1 0 1.41l-9.2 9.3" />
+    <path d="M18 13.3l-6.3 -6.3" />
+  </>,
+);
+
+/** a finger: "fingers draw" (pen mode off) */
+export const fingerIcon = icon(
+  <>
+    <path d="M8 13v-8.5a1.5 1.5 0 0 1 3 0v7.5" />
+    <path d="M11 11.5v-2a1.5 1.5 0 1 1 3 0v2.5" />
+    <path d="M14 10.5a1.5 1.5 0 0 1 3 0v1.5" />
+    <path d="M17 11.5a1.5 1.5 0 0 1 3 0v4.5a6 6 0 0 1 -6 6h-2h.208a6 6 0 0 1 -5.012 -2.7a69.74 69.74 0 0 1 -.196 -.3c-.312 -.479 -1.407 -2.388 -3.286 -5.728a1.5 1.5 0 0 1 .536 -2.022a1.867 1.867 0 0 1 2.28 .28l1.47 1.47" />
+  </>,
+);
+
+export const fullscreenIcon = icon(
+  <>
+    <path d="M4 8v-2a2 2 0 0 1 2 -2h2" />
+    <path d="M4 16v2a2 2 0 0 0 2 2h2" />
+    <path d="M16 4h2a2 2 0 0 1 2 2v2" />
+    <path d="M16 20h2a2 2 0 0 0 2 -2v-2" />
+  </>,
+);

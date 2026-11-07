@@ -18,9 +18,11 @@ Everything below is implemented, tested and on `main`:
 - **Accounts**: admin creates people (one by one or many at once), resets passwords, disables/deletes accounts. Roles: `admin`, `member`.
 - **Papers**: created by admins, shared with chosen members; rename, duplicate (templates), delete; dashboard with cover thumbnails.
 - **Pages**: add (blank / lined / grid / dotted / from PDF or images), rename, reorder by drag & drop, duplicate, delete (owner/admin only); pages panel with live thumbnails; page bar; keyboard shortcuts.
-- **Real-time**: drawing, cursors, laser, selections; presence per page; follow a person; **presenter mode** (everyone follows); **bring everyone here**; **lock** (view-only for everyone but the owner/admins); offline edits are sent after reconnecting.
+- **Real-time**: drawing, cursors, laser, selections; presence per page; follow a person; **presenter mode** (everyone follows); **bring everyone here**; **lock** (view-only for everyone but the owner/admins); offline edits are sent after reconnecting. Others' strokes still being drawn are shown on their own layer (`editor/liveStrokes.ts`), so a page full of notes on a tablet keeps up (~28 ms instead of ~112 ms on a 4× slowed CPU, see decisions.md → "Live strokes").
 - **Embeds**: per-paper public link (`/embed/<id>#token=…`), view or edit, guests join without an account, reset/disable link, `EMBED_ALLOWED_ORIGINS`.
 - **LaTeX math** (MathJax → SVG image, editable via double-click) and **partially colored text** (color selected words; a small, self-contained change to the editor core).
+- **Tablets**: the pen draws (every point it reports), fingers pan and pinch-zoom, a resting palm is ignored (palm rejection), long press opens the menu, two/three-finger tap undoes/redoes; pen mode is remembered per device; the screen stays on during lessons; full screen (`editor/tabletInput.ts`, `device.ts`).
+- **Pen bar** (pens, highlighter, eraser) and **bars that fit** any tablet, portrait or landscape (`PenTray.tsx`, `TopRight.tsx`, `fit.ts`).
 - **Images**, export of the current page, **Print/PDF of all pages**.
 - **Deployment**: single Docker image (Node only) + Caddy for HTTPS (`deploy/`). Tested with Docker, Compose and Caddy.
 
@@ -34,7 +36,7 @@ WHITEBOARD.md        user documentation
 docs/whiteboard/     these notes
 ```
 
-The original `excalidraw-app/` (excalidraw.com) is **untouched**. `packages/` has one deliberate addition — partially colored text — kept small and documented in [decisions.md](./decisions.md#changes-to-packages) so upstream merges stay easy.
+The original `excalidraw-app/` (excalidraw.com) is **untouched**. `packages/` has a few deliberate, small changes (partially colored text, replacing an image's data, every pen sample in freehand strokes), documented in [decisions.md](./decisions.md#changes-to-packages) so upstream merges stay easy.
 
 ## Everyday commands
 
@@ -48,6 +50,7 @@ npx vitest run whiteboard-server  # server unit + integration tests (~7s)
 npm run test:typecheck            # tsc for packages + app, and for the server
 npm run whiteboard:build          # production build (app + server bundle)
 npm run whiteboard:e2e -- http://localhost:3002 admin <password>   # browser smoke test
+npm run whiteboard:e2e:tablet -- http://localhost:3002 admin <password>   # pen, fingers & palm in a real browser
 ```
 
 `npm run <script>` and `yarn <script>` are interchangeable. Before committing, the repo's usual checks apply (see `/CLAUDE.md`): `npm run test:typecheck`, `npm run test:code` (eslint, 0 warnings), `npm run test:other` (prettier) and `npm run test:update` (the whole vitest suite).

@@ -167,6 +167,9 @@ export interface ClientToServerEvents {
     pageId: string;
     elements: SyncedElement[];
     patches?: ElementPatch[];
+    /** strokes in this message that are still being drawn (see `drawing`
+     * on the server's message) */
+    drawing?: string[];
   }) => void;
   /** asks for the current version of elements (after a patch didn't fit) */
   "paper:fetch": (data: { pageId: string; ids: string[] }) => void;
@@ -202,6 +205,13 @@ export interface ServerToClientEvents {
     pageId: string;
     elements: SyncedElement[];
     patches?: ElementPatch[];
+    /**
+     * ids of strokes the sender is still drawing: receivers draw them on a
+     * light overlay and add them to the page once finished (a stroke that is
+     * in a message but not listed here is finished). Absent from older
+     * clients: then every change goes to the page right away.
+     */
+    drawing?: string[];
   }) => void;
   /** patches that didn't fit the server's copy: send these in full */
   "paper:resend": (data: { pageId: string; ids: string[] }) => void;

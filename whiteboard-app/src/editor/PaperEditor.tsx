@@ -6,6 +6,9 @@ import {
   languages,
   useHandleLibrary,
 } from "@excalidraw/excalidraw";
+import { DEFAULT_SIDEBAR, LIBRARY_SIDEBAR_TAB } from "@excalidraw/common";
+import { LibraryIcon } from "@excalidraw/excalidraw/components/icons";
+import { useUIAppState } from "@excalidraw/excalidraw/context/ui-appState";
 import { useI18n } from "@excalidraw/excalidraw/i18n";
 import clsx from "clsx";
 import {
@@ -36,25 +39,38 @@ import { useLangCode, useTheme } from "../prefs";
 import { Link, navigate } from "../router";
 
 import {
+  canFullscreen,
+  toggleFullscreen,
+  useIsFullscreen,
+  useScreenWakeLock,
+} from "./device";
+import { useFitLevel } from "./fit";
+import {
   backIcon,
   chevronLeft,
   chevronRight,
-  lockIcon,
+  fullscreenIcon,
   pagesIcon,
   plusIcon,
-  presentIcon,
   printIcon,
   shareIcon,
-  unlockIcon,
 } from "./icons";
 import { LibraryIndexedDBAdapter } from "./library";
 import { getMathData, placeMath } from "./math";
 import { MathDialog } from "./MathDialog";
 import { importIntoPaper } from "./NewPageMenu";
 import { PAGES_SIDEBAR, PagesSidebar } from "./PagesSidebar";
+import { PenTray, widenHighlighterStroke } from "./PenTray";
 import { printAllPages } from "./print";
 import { PaperSession, getPageLabel } from "./session";
-import { PageThumbnails, renderPagePNG } from "./thumbnails";
+import {
+  getInitialPenState,
+  installTabletInput,
+  rememberPenMode,
+  sendHistoryShortcut,
+} from "./tabletInput";
+import { PageThumbnails, renderPagePNG, runWhenQuiet } from "./thumbnails";
+import { TopRight } from "./TopRight";
 
 import type { SessionState } from "./session";
 import type {
@@ -164,7 +180,10 @@ const PageNav = ({
         title="Show all pages"
       >
         {compact ? (
-          `${index + 1}/${state.pages.length}`
+          <>
+            {pagesIcon}
+            {`${index + 1}/${state.pages.length}`}
+          </>
         ) : (
           <>
             <span className="wb-pagenav__name">{label}</span>
@@ -199,73 +218,41 @@ const PageNav = ({
   );
 };
 
-const StatusPills = ({
+/**
+ * The page bar and the pens at the bottom. On narrow screens the page bar
+ * shows just "2/5", then fewer pens, then no pens (see `useFitLevel`).
+ */
+const FooterBar = ({
   session,
   state,
+  excalidrawAPI,
 }: {
   session: PaperSession;
   state: SessionState;
-}) => (
-  <>
-    {state.status !== "connected" && (
-      <span
-        className="wb-pill wb-pill--warning"
-        title="Changes are kept and sent when the connection is back"
-      >
-        <span className="wb-dot" /> Reconnecting…
-      </span>
-    )}
-    {state.canManage ? (
-      <button
-        type="button"
-        className={clsx("wb-pill wb-pill--button", {
-          "wb-pill--active": state.paper?.locked,
-        })}
-        onClick={() => session.setLocked(!state.paper?.locked)}
-        title={
-          state.paper?.locked
-            ? "Locked: only you (and admins) can draw. Click to let everyone draw."
-            : "Everyone can draw. Click to make the paper view-only for others."
-        }
-      >
-        {state.paper?.locked ? lockIcon : unlockIcon}
-        {state.paper?.locked ? "Locked" : "Lock"}
-      </button>
-    ) : (
-      !state.canEdit && (
-        <span className="wb-pill" title="The owner locked this paper">
-          {lockIcon} View only
-        </span>
-      )
-    )}
-    {state.canManage && (
-      <button
-        type="button"
-        className={clsx("wb-pill wb-pill--button", {
-          "wb-pill--active": state.presenter?.socketId === state.socketId,
-        })}
-        onClick={() =>
-          session.setPresenting(state.presenter?.socketId !== state.socketId)
-        }
-        title={
-          state.presenter?.socketId === state.socketId
-            ? "Everyone follows your view and page. Click to stop."
-            : "Present: everyone follows your view and page"
-        }
-      >
-        {presentIcon}
-        {state.presenter?.socketId === state.socketId
-          ? "Presenting"
-          : "Present"}
-      </button>
-    )}
-    {state.followers > 0 && (
-      <span className="wb-pill" title="People following your view">
-        👁 {state.followers}
-      </span>
-    )}
-  </>
-);
+  excalidrawAPI: ExcalidrawImperativeAPI | null;
+}) => {
+  const ref = useRef<HTMLDivElement>(null);
+  const { penDetected } = useUIAppState();
+  const page = state.pages.find((p) => p.id === state.currentPageId);
+  const level = useFitLevel(
+    ref,
+    3,
+    [state.canEdit, state.pages.length, page?.name, penDetected].join(),
+  );
+  return (
+    <div ref={ref} className="wb-footerbar">
+      <PageNav
+        session={session}
+        state={state}
+        excalidrawAPI={excalidrawAPI}
+        compact={level >= 1}
+      />
+      {state.canEdit && level < 3 && (
+        <PenTray excalidrawAPI={excalidrawAPI} compact={level >= 2} />
+      )}
+    </div>
+  );
+};
 
 const EditorView = ({
   session,
@@ -287,7 +274,10 @@ const EditorView = ({
   const [langCode, setLangCode] = useLangCode();
   const [excalidrawAPI, setExcalidrawAPI] =
     useState<ExcalidrawImperativeAPI | null>(null);
-  const [initialData] = useState(() => session.getInitialData());
+  const [initialData] = useState(() => {
+    const data = session.getInitialData();
+    return { ...data, appState: { ...data.appState, ...getInitialPenState() } };
+  });
   const [thumbnails] = useState(
     () => new PageThumbnails(session, () => apiRef.current),
   );
@@ -301,6 +291,13 @@ const EditorView = ({
   });
 
   useEffect(() => () => thumbnails.destroy(), [thumbnails]);
+
+  // tablets: the screen stays on while others are in the paper (a student
+  // following the presenter doesn't touch the screen)
+  useScreenWakeLock(
+    state.presence.some((user) => user.socketId !== state.socketId),
+  );
+  const fullscreen = useIsFullscreen();
 
   // opt-in debugging handle: localStorage.setItem("whiteboard-debug", "1")
   useEffect(() => {
@@ -336,6 +333,46 @@ const EditorView = ({
     };
     container.addEventListener("drop", onDrop, true);
     return () => container.removeEventListener("drop", onDrop, true);
+  }, [session]);
+
+  // others' strokes while they draw them (see liveStrokes.ts)
+  useEffect(() => {
+    const root = containerRef.current;
+    if (!root) {
+      return;
+    }
+    session.liveStrokes.mount(root);
+    return () => session.liveStrokes.unmount();
+  }, [session]);
+
+  // tablets: the pen draws, fingers move the view, a resting palm does
+  // nothing (see tabletInput.ts)
+  useEffect(() => {
+    const root = containerRef.current;
+    if (!root) {
+      return;
+    }
+    return installTabletInput({
+      root,
+      getAPI: () => apiRef.current,
+      // moving the view yourself stops following someone (as in Excalidraw)
+      onNavigate: () => {
+        if (session.getState().userToFollow) {
+          session.follow(null);
+        }
+      },
+      // two-finger tap: undo, three-finger tap: redo
+      onHistory: (action) => {
+        if (!session.getState().canEdit) {
+          return;
+        }
+        sendHistoryShortcut(action);
+        apiRef.current?.setToast({
+          message: action === "undo" ? "Undo" : "Redo",
+          duration: 900,
+        });
+      },
+    });
   }, [session]);
 
   // keyboard shortcuts for pages
@@ -407,19 +444,39 @@ const EditorView = ({
         console.warn("[cover]", error);
       }
     };
-    const unsubscribe = session.onPageContentChange((pageId) => {
+    // only whoever changed the page renders the cover (not everyone in the
+    // lesson), when nobody is drawing: it's a few hundred milliseconds of
+    // work on a tablet
+    let cancelWait: (() => void) | null = null;
+    const unsubscribe = session.onPageContentChange((pageId, origin) => {
       const { pages, canEdit, isGuest } = session.getState();
-      if (canEdit && !isGuest && pageId === pages[0]?.id) {
+      if (
+        origin === "local" &&
+        canEdit &&
+        !isGuest &&
+        pageId === pages[0]?.id
+      ) {
         if (timer) {
           window.clearTimeout(timer);
         }
-        timer = window.setTimeout(upload, COVER_UPLOAD_DELAY_MS);
+        cancelWait?.();
+        timer = window.setTimeout(() => {
+          cancelWait = runWhenQuiet(session, () => {
+            cancelWait = null;
+            upload();
+          });
+        }, COVER_UPLOAD_DELAY_MS);
       }
     });
     return () => {
       unsubscribe();
+      // leaving: upload a cover that was still due
+      const due = timer !== null || cancelWait !== null;
+      cancelWait?.();
       if (timer) {
         window.clearTimeout(timer);
+      }
+      if (due) {
         upload();
       }
     };
@@ -440,6 +497,10 @@ const EditorView = ({
       files: BinaryFiles,
     ) => {
       session.onEditorChange(elements, appState, files);
+      rememberPenMode(appState);
+      if (apiRef.current) {
+        widenHighlighterStroke(appState, apiRef.current);
+      }
       const croppingId = appState.croppingElementId;
       if (croppingId && session.getState().canEdit) {
         const element = elements.find((el) => el.id === croppingId);
@@ -503,40 +564,31 @@ const EditorView = ({
             toggleTheme: true,
           },
         }}
-        renderTopRightUI={(isMobile) => (
-          <div className="wb-topright">
-            {isMobile ? (
+        renderTopRightUI={(isMobile) =>
+          isMobile ? (
+            <div className="wb-topright">
               <PageNav
                 session={session}
                 state={state}
                 excalidrawAPI={excalidrawAPI}
                 compact
               />
-            ) : (
-              <>
-                {state.canEdit && (
-                  <button
-                    type="button"
-                    className="wb-pill wb-pill--button"
-                    onClick={() => setMathEditor({ element: null })}
-                    title="Insert a math formula (LaTeX) — Alt+M"
-                  >
-                    <span className="wb-pill__math">∑</span> Math
-                  </button>
-                )}
-                <StatusPills session={session} state={state} />
-              </>
-            )}
-            <Sidebar.Trigger
-              name={PAGES_SIDEBAR}
-              icon={pagesIcon}
-              title="Pages"
-              className="wb-pages-trigger"
-            >
-              {isMobile ? null : "Pages"}
-            </Sidebar.Trigger>
-          </div>
-        )}
+              <Sidebar.Trigger
+                name={PAGES_SIDEBAR}
+                icon={pagesIcon}
+                title="Pages"
+                className="wb-pages-trigger"
+              />
+            </div>
+          ) : (
+            <TopRight
+              session={session}
+              state={state}
+              docked={docked}
+              onMath={() => setMathEditor({ element: null })}
+            />
+          )
+        }
       >
         <MainMenu>
           {!embed && (
@@ -584,6 +636,22 @@ const EditorView = ({
               Insert math (LaTeX)
             </MainMenu.Item>
           )}
+          {canFullscreen() && (
+            <MainMenu.Item icon={fullscreenIcon} onSelect={toggleFullscreen}>
+              {fullscreen ? "Exit full screen" : "Full screen"}
+            </MainMenu.Item>
+          )}
+          <MainMenu.Item
+            icon={LibraryIcon}
+            onSelect={() =>
+              excalidrawAPI?.toggleSidebar({
+                name: DEFAULT_SIDEBAR.name,
+                tab: LIBRARY_SIDEBAR_TAB,
+              })
+            }
+          >
+            Library
+          </MainMenu.Item>
           <MainMenu.DefaultItems.SearchMenu />
           <MainMenu.DefaultItems.Help />
           {state.canEdit && <MainMenu.DefaultItems.ClearCanvas />}
@@ -598,7 +666,7 @@ const EditorView = ({
           <MainMenu.DefaultItems.ChangeCanvasBackground />
         </MainMenu>
         <Footer>
-          <PageNav
+          <FooterBar
             session={session}
             state={state}
             excalidrawAPI={excalidrawAPI}

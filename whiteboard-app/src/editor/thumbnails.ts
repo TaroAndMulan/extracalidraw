@@ -7,6 +7,48 @@ import type { NonDeletedExcalidrawElement } from "@excalidraw/element/types";
 import type { PaperSession } from "./session";
 
 const THUMBNAIL_SIZE = 320;
+/** how often to check whether everyone stopped drawing */
+const QUIET_CHECK_MS = 400;
+
+/**
+ * Runs `task` once nobody is drawing on the current page and the browser is
+ * idle. Rendering a page to a picture takes a few hundred milliseconds with a
+ * page of notes on a tablet — done mid-stroke, everyone's strokes would
+ * stall that long on this screen. Returns a function that cancels it.
+ */
+export const runWhenQuiet = (session: PaperSession, task: () => void) => {
+  let timer: number | null = null;
+  let idle: number | null = null;
+  const check = () => {
+    timer = null;
+    if (session.isDrawing()) {
+      timer = window.setTimeout(check, QUIET_CHECK_MS);
+    } else if ("requestIdleCallback" in window) {
+      idle = window.requestIdleCallback(
+        () => {
+          idle = null;
+          if (session.isDrawing()) {
+            timer = window.setTimeout(check, QUIET_CHECK_MS);
+          } else {
+            task();
+          }
+        },
+        { timeout: 2000 },
+      );
+    } else {
+      task();
+    }
+  };
+  check();
+  return () => {
+    if (timer !== null) {
+      window.clearTimeout(timer);
+    }
+    if (idle !== null) {
+      window.cancelIdleCallback(idle);
+    }
+  };
+};
 
 export const renderPagePNG = async (
   excalidrawAPI: ExcalidrawImperativeAPI,
@@ -36,6 +78,7 @@ export class PageThumbnails {
   private wanted = new Set<string>();
   private running = false;
   private timer: number | null = null;
+  private cancelWait: (() => void) | null = null;
   private listeners = new Set<() => void>();
   private version = 0;
   private unsubscribe: () => void;
@@ -57,6 +100,7 @@ export class PageThumbnails {
     if (this.timer) {
       window.clearTimeout(this.timer);
     }
+    this.cancelWait?.();
     for (const { url } of this.cache.values()) {
       if (url) {
         URL.revokeObjectURL(url);
@@ -93,7 +137,11 @@ export class PageThumbnails {
     }
     this.timer = window.setTimeout(() => {
       this.timer = null;
-      this.run();
+      this.cancelWait?.();
+      this.cancelWait = runWhenQuiet(this.session, () => {
+        this.cancelWait = null;
+        this.run();
+      });
     }, delay);
   }
 
@@ -139,8 +187,14 @@ export class PageThumbnails {
         for (const listener of this.listeners) {
           listener();
         }
-        // let the editor breathe between renders
-        await new Promise((resolve) => setTimeout(resolve, 16));
+        // let the editor breathe between renders, and wait while someone
+        // draws
+        await new Promise<void>((resolve) => {
+          this.cancelWait = runWhenQuiet(this.session, () => {
+            this.cancelWait = null;
+            resolve();
+          });
+        });
       }
     } finally {
       this.running = false;
