@@ -183,7 +183,9 @@ type CachedEncoding = { br?: Buffer; gzip?: Buffer };
 /**
  * Serves the built app. Hashed assets are cached forever by browsers, and
  * compressed responses are cached in memory, so after the first request the
- * app loads straight from RAM.
+ * app loads straight from RAM. The build compresses files ahead of time
+ * (brotli at its best level, see whiteboard-app/vite.config.mts); other
+ * files are compressed on their first request.
  */
 export class StaticFiles {
   private compressed = new Map<string, Promise<CachedEncoding>>();
@@ -209,19 +211,43 @@ export class StaticFiles {
     }
   }
 
+  /** `file.br`/`file.gz` written by the app's build (smaller, and ready) */
+  private async readPrecompressed(file: string, mtimeMs: number) {
+    const read = async (variant: string) => {
+      try {
+        const stat = await fs.stat(variant);
+        // a leftover from an older build doesn't count
+        return stat.mtimeMs >= mtimeMs ? await fs.readFile(variant) : null;
+      } catch {
+        return null;
+      }
+    };
+    const [br, gz] = await Promise.all([
+      read(`${file}.br`),
+      read(`${file}.gz`),
+    ]);
+    return br && gz ? { br, gzip: gz } : null;
+  }
+
   private getCompressed(file: string, mtimeMs: number) {
     const key = `${file}:${mtimeMs}`;
     let entry = this.compressed.get(key);
     if (!entry) {
-      entry = fs.readFile(file).then(async (data) => {
-        const [br, gz] = await Promise.all([
-          brotli(data, {
-            params: { [zlib.constants.BROTLI_PARAM_QUALITY]: 9 },
-          }),
-          gzip(data, { level: 9 }),
-        ]);
-        return { br, gzip: gz };
-      });
+      entry = this.readPrecompressed(file, mtimeMs).then(
+        async (precompressed) => {
+          if (precompressed) {
+            return precompressed;
+          }
+          const data = await fs.readFile(file);
+          const [br, gz] = await Promise.all([
+            brotli(data, {
+              params: { [zlib.constants.BROTLI_PARAM_QUALITY]: 9 },
+            }),
+            gzip(data, { level: 9 }),
+          ]);
+          return { br, gzip: gz };
+        },
+      );
       this.compressed.set(key, entry);
     }
     return entry;

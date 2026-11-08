@@ -5,6 +5,7 @@
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import zlib from "node:zlib";
 
 import { io as connectSocket } from "socket.io-client";
 
@@ -32,7 +33,7 @@ let app: Awaited<ReturnType<typeof createApp>>;
 let base: string;
 const sockets: ClientSocket[] = [];
 
-const startServer = async () => {
+const startServer = async (overrides: Partial<typeof defaultConfig> = {}) => {
   app = await createApp({
     ...defaultConfig,
     host: "127.0.0.1",
@@ -45,6 +46,7 @@ const startServer = async () => {
     persistDebounceMs: 10,
     trustProxy: false,
     cookieSecure: "false",
+    ...overrides,
   });
   base = `http://127.0.0.1:${await app.listen()}`;
 };
@@ -550,6 +552,223 @@ describe("whiteboard server: real-time", () => {
     expect(state.elements.p2.map((e) => e.id)).toEqual(["b"]);
     const { data } = await request(cookie, "GET", `/api/papers/${paper.id}`);
     expect(data.paper.pageCount).toBe(2);
+  });
+});
+
+describe("whiteboard server: storage", () => {
+  const paperDir = () => path.join(dataDir, "papers", paper.id);
+  const restart = async (overrides: Partial<typeof defaultConfig> = {}) => {
+    await app.close();
+    await startServer(overrides);
+    return login("admin", ADMIN_PASSWORD);
+  };
+  const uploadImage = async (fileId: string) => {
+    const response = await fetch(
+      `${base}/api/papers/${paper.id}/files/${fileId}`,
+      {
+        method: "PUT",
+        headers: { cookie: adminCookie, "Content-Type": "image/png" },
+        body: new Uint8Array([137, 80, 78, 71, fileId.length]),
+      },
+    );
+    expect(response.status).toBe(201);
+  };
+  const imageExists = (fileId: string, paperId = paper.id) =>
+    fs
+      .stat(path.join(dataDir, "papers", paperId, "files", fileId))
+      .then(() => true)
+      .catch(() => false);
+  const makeOld = async (file: string) => {
+    const twoDaysAgo = new Date(Date.now() - 2 * 24 * 60 * 60 * 1000);
+    await fs.utimes(file, twoDaysAgo, twoDaysAgo);
+  };
+
+  it("keeps strokes compact: rounded points, gzipped pages", async () => {
+    const admin = connect(adminCookie);
+    const maya = connect(memberCookie);
+    const pageId = (await joinOk(admin, paper.id)).pages[0].id;
+    await joinOk(maya, paper.id);
+    admin.emit("paper:elements", {
+      pageId,
+      elements: [
+        element("s", 2, {
+          type: "freedraw",
+          points: [
+            [0, 0],
+            [10.123456789, -4.987654321],
+          ],
+          pressures: [0.5, 0.37109375],
+        }),
+      ],
+    });
+    // others get the compact version
+    const { elements } = await next(maya, "paper:elements");
+    expect(elements[0].points).toEqual([
+      [0, 0],
+      [10.12, -4.99],
+    ]);
+    expect(elements[0].pressures).toEqual([0.5, 0.371]);
+    await wait(100);
+
+    const file = path.join(paperDir(), "pages", `${pageId}.json.gz`);
+    const stored = JSON.parse(
+      zlib.gunzipSync(await fs.readFile(file)).toString(),
+    );
+    expect(stored.map((e: SyncedElement) => e.points)).toEqual([
+      [
+        [0, 0],
+        [10.12, -4.99],
+      ],
+    ]);
+  });
+
+  it("reads pages stored as plain JSON, and compacts them", async () => {
+    const pageId = (await joinOk(connect(adminCookie), paper.id)).pages[0].id;
+    await wait(100);
+    const pages = path.join(paperDir(), "pages");
+    await fs.rm(path.join(pages, `${pageId}.json.gz`));
+    const old = element("s", 2, {
+      type: "freedraw",
+      points: [[1.23456, 2.34567]],
+    });
+    await fs.writeFile(
+      path.join(pages, `${pageId}.json`),
+      JSON.stringify([old]),
+    );
+
+    const cookie = await restart();
+    const state = await joinOk(connect(cookie), paper.id);
+    expect(state.elements[pageId].map((e) => e.points)).toEqual([
+      [[1.23, 2.35]],
+    ]);
+    // written again in the new format
+    await wait(100);
+    expect((await fs.readdir(pages)).sort()).toEqual([`${pageId}.json.gz`]);
+  });
+
+  it("drops the contents of pages deleted long ago", async () => {
+    const admin = connect(adminCookie);
+    await joinOk(admin, paper.id);
+    admin.emit("paper:pages", {
+      pages: [newPage("p2", "a1"), newPage("p3", "a2")],
+    });
+    admin.emit("paper:elements", { pageId: "p2", elements: [element("a", 1)] });
+    admin.emit("paper:elements", { pageId: "p3", elements: [element("b", 1)] });
+    await wait(50);
+    admin.emit("paper:pages", {
+      pages: [
+        { ...newPage("p2", "a1"), version: 2, isDeleted: true },
+        {
+          ...newPage("p3", "a2"),
+          version: 2,
+          isDeleted: true,
+          // deleted a minute ago
+          updated: Date.now() - 60_000,
+        },
+      ],
+    });
+    await wait(100);
+    admin.close();
+    const pages = path.join(paperDir(), "pages");
+    expect(await fs.readdir(pages)).toContain("p3.json.gz");
+
+    // pages deleted more than 30 s ago are expired
+    const cookie = await restart({ tombstoneTtlMs: 30_000 });
+    const state = await joinOk(connect(cookie), paper.id);
+    expect(state.pages.find((p) => p.id === "p3")?.isDeleted).toBe(true);
+    const files = await fs.readdir(pages);
+    expect(files).toContain("p2.json.gz");
+    expect(files).not.toContain("p3.json.gz");
+  });
+
+  it("removes images nothing uses once the paper is idle", async () => {
+    const admin = connect(adminCookie);
+    const pageId = (await joinOk(admin, paper.id)).pages[0].id;
+    for (const fileId of ["shown", "erased", "unused", "recent"]) {
+      await uploadImage(fileId);
+    }
+    admin.emit("paper:elements", {
+      pageId,
+      elements: [
+        element("i1", 1, { type: "image", fileId: "shown" }),
+        element("i2", 2, { type: "image", fileId: "erased", isDeleted: true }),
+      ],
+    });
+    await wait(100);
+    admin.close();
+    const files = path.join(paperDir(), "files");
+    for (const name of await fs.readdir(files)) {
+      if (!name.startsWith("recent")) {
+        await makeOld(path.join(files, name));
+      }
+    }
+
+    // still open: nothing happens
+    await app.hub.unloadIdlePapers();
+    expect(await imageExists("unused")).toBe(true);
+
+    await restart({ paperIdleUnloadMs: 0 });
+    await joinOk(connect(await login("admin", ADMIN_PASSWORD)), paper.id);
+    for (const socket of sockets.splice(0)) {
+      socket.close();
+    }
+    await wait(50);
+    await app.hub.unloadIdlePapers();
+    expect(await imageExists("shown")).toBe(true);
+    // erased images stay as long as their element is kept (undo)
+    expect(await imageExists("erased")).toBe(true);
+    // uploads may come before their element
+    expect(await imageExists("recent")).toBe(true);
+    expect(await imageExists("unused")).toBe(false);
+    expect(await fs.readdir(files)).not.toContain("unused.json");
+  });
+
+  it("copies of a paper share its images", async () => {
+    await uploadImage("picture");
+    const { data, status } = await request(
+      adminCookie,
+      "POST",
+      `/api/papers/${paper.id}/duplicate`,
+      { title: "Copy" },
+    );
+    expect(status).toBe(201);
+    const original = await fs.stat(path.join(paperDir(), "files", "picture"));
+    const copy = await fs.stat(
+      path.join(dataDir, "papers", data.paper.id, "files", "picture"),
+    );
+    expect(copy.ino).toBe(original.ino);
+
+    const download = await fetch(
+      `${base}/api/papers/${data.paper.id}/files/picture`,
+      { headers: { cookie: adminCookie } },
+    );
+    expect(download.headers.get("content-type")).toBe("image/png");
+    // deleting the original leaves the copy's images alone
+    await request(adminCookie, "DELETE", `/api/papers/${paper.id}`);
+    expect(await imageExists("picture", data.paper.id)).toBe(true);
+  });
+
+  it("serves the app's precompressed files", async () => {
+    const appDir = path.join(dataDir, "no-app");
+    await fs.mkdir(path.join(appDir, "assets"), { recursive: true });
+    const script = `console.log(${JSON.stringify("x".repeat(2000))});`;
+    const index = `<!doctype html><script src="/assets/app.js"></script>`;
+    await fs.writeFile(path.join(appDir, "index.html"), index);
+    await fs.writeFile(path.join(appDir, "assets", "app.js"), script);
+    const br = zlib.brotliCompressSync(script);
+    await fs.writeFile(path.join(appDir, "assets", "app.js.br"), br);
+    await fs.writeFile(
+      path.join(appDir, "assets", "app.js.gz"),
+      zlib.gzipSync(script),
+    );
+    await restart();
+
+    const response = await fetch(`${base}/assets/app.js`, {
+      headers: { "Accept-Encoding": "br" },
+    });
+    expect(response.headers.get("content-encoding")).toBe("br");
+    expect(response.headers.get("content-length")).toBe(String(br.length));
+    expect(await response.text()).toBe(script);
   });
 });
 

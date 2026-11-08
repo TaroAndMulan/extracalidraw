@@ -3,6 +3,7 @@ import crypto from "node:crypto";
 import { getSessionToken } from "./auth";
 import {
   applyPatch,
+  compactElement,
   getLivePages,
   isNewer,
   mergeVersioned,
@@ -108,6 +109,9 @@ const randomNonce = () => Math.floor(Math.random() * 2 ** 31);
 const MAX_PREVIEW_BYTES = 512 * 1024;
 /** strokes one person can be drawing at once (fingers on a touch screen) */
 const MAX_DRAWING = 10;
+/** images no element uses are deleted once they're this old (an upload may
+ * reach the server before the element that shows it) */
+const UNUSED_FILE_MIN_AGE_MS = 24 * 60 * 60 * 1000;
 
 export const createDefaultPage = (index = "a0"): PageMeta => ({
   id: randomId(9),
@@ -160,18 +164,44 @@ export class LivePaper {
       config.persistDebounceMs,
       onPersisted,
     );
-    const { pages, elements } = await storage.loadPaper(id);
-    for (const page of pages) {
+    const now = Date.now();
+    const pages = await storage.loadPages(id);
+    // nobody can bring back a deleted page: once it's been deleted for as
+    // long as erased elements are kept, its contents go too
+    const isExpired = (page: PageMeta) =>
+      page.isDeleted && now - page.updated > config.tombstoneTtlMs;
+    const stored = await Promise.all(
+      pages.map((page) =>
+        isExpired(page) ? null : storage.loadPageElements(id, page.id),
+      ),
+    );
+    const expired: string[] = [];
+    pages.forEach((page, i) => {
       live.pages.set(page.id, page);
       const map = new Map<string, SyncedElement>();
-      for (const element of elements.get(page.id) ?? []) {
-        map.set(element.id, element);
+      live.elements.set(page.id, map);
+      const contents = stored[i];
+      if (!contents) {
+        expired.push(page.id);
+        return;
       }
-      if (pruneTombstones(map, config.tombstoneTtlMs) > 0) {
+      // pages saved in an older format are written again
+      let dirty = contents.legacy;
+      for (const element of contents.elements) {
+        const compact = compactElement(element);
+        dirty ||= compact !== element;
+        map.set(compact.id, compact);
+      }
+      if (pruneTombstones(map, config.tombstoneTtlMs, now) > 0) {
+        dirty = true;
+      }
+      if (dirty) {
         live.dirtyPages.add(page.id);
       }
-      live.elements.set(page.id, map);
-    }
+    });
+    await Promise.all(
+      expired.map((pageId) => storage.deletePageElements(id, pageId)),
+    );
     if (getLivePages(live.pages.values()).length === 0) {
       const page = createDefaultPage();
       live.pages.set(page.id, page);
@@ -260,6 +290,19 @@ export class LivePaper {
 
   getPageElements(pageId: string) {
     return sortByIndex(this.elements.get(pageId)?.values() ?? []);
+  }
+
+  /** images shown by any element, erased ones included */
+  usedFileIds() {
+    const fileIds = new Set<string>();
+    for (const map of this.elements.values()) {
+      for (const element of map.values()) {
+        if (element.type === "image" && typeof element.fileId === "string") {
+          fileIds.add(element.fileId);
+        }
+      }
+    }
+    return fileIds;
   }
 
   snapshot() {
@@ -432,7 +475,8 @@ export class PaperHub {
     }
   }
 
-  private async unloadIdlePapers() {
+  /** runs every minute (public for tests) */
+  async unloadIdlePapers() {
     const now = Date.now();
     for (const [paperId, live] of this.loaded) {
       if (
@@ -441,6 +485,16 @@ export class PaperHub {
       ) {
         this.forget(paperId);
         await live.dispose();
+        // nobody is in the paper: a good moment to tidy up its images
+        await this.storage
+          .removeUnusedFiles(
+            paperId,
+            live.usedFileIds(),
+            UNUSED_FILE_MIN_AGE_MS,
+          )
+          .catch((error) =>
+            console.error(`[paper ${paperId}] failed to remove images`, error),
+          );
       }
     }
   }

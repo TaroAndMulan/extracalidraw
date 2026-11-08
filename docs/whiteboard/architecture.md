@@ -16,7 +16,7 @@ browser ──HTTPS──▶ Caddy ──▶ whiteboard-server (one Node.js proc
 | `config.ts` | All environment variables (see the table in `WHITEBOARD.md`). |
 | `store.ts` | `Database` (users, sessions, papers index in `db.json`, debounced atomic writes) and `PaperStorage` (pages, images, thumbnails on disk). |
 | `auth.ts` | scrypt password hashing, session cookie helpers, login rate limiter, validation. |
-| `http.ts` | Tiny router, JSON/body helpers, `StaticFiles` (ETag, immutable caching of `/assets/*`, brotli/gzip cached in memory, framing headers). |
+| `http.ts` | Tiny router, JSON/body helpers, `StaticFiles` (ETag, immutable caching of `/assets/*`, brotli/gzip files from the build — compressed on first request otherwise — cached in memory, framing headers). |
 | `api.ts` | REST endpoints, permission checks for users and guests (`X-Share-Token`). |
 | `realtime.ts` | `PaperHub` (socket.io handlers, presence, follow/presenter, lock, kicking) and `LivePaper` (in-memory state of an open paper, persistence). |
 | `reconcile.ts` | Pure merge logic: version rules, validation of untrusted elements/pages, ordering, tombstone pruning. |
@@ -30,14 +30,20 @@ A paper is loaded into memory (`LivePaper`) the first time someone joins it and 
 
 ```
 db.json                              users, sessions (token hashes), papers index
-papers/<paperId>/pages.json          page list (PageMeta[], incl. deleted pages)
-papers/<paperId>/pages/<pageId>.json elements of a page (incl. recent tombstones)
-papers/<paperId>/files/<fileId>      image bytes (fileId = SHA-1 of the content)
-papers/<paperId>/files/<fileId>.json { mimeType, created }
-papers/<paperId>/thumbnail.png       cover shown on the dashboard
+papers/<paperId>/pages.json             page list (PageMeta[], incl. deleted pages)
+papers/<paperId>/pages/<pageId>.json.gz elements of a page, gzipped (incl. recent tombstones)
+papers/<paperId>/files/<fileId>         image bytes (fileId = SHA-1 of the content)
+papers/<paperId>/files/<fileId>.json    { mimeType, created }
+papers/<paperId>/thumbnail.png          cover shown on the dashboard
 ```
 
 All ids are validated (`/^[A-Za-z0-9_-]{1,128}$/`) before touching the file system. Writes go to a temp file and are renamed (atomic).
+
+Keeping it small (decisions.md → "Storage and loading"):
+
+- **Pages** are gzipped JSON (`zcat` reads one). Pages stored before that as plain `<pageId>.json` are still read, and written again as `.json.gz` (with compact strokes) once their paper is opened.
+- **Deleted pages**: their elements are dropped once the page has been deleted for `TOMBSTONE_TTL_DAYS`; the tombstone stays in `pages.json`.
+- **Images** never change once written (replaced by rename, never edited in place), so a duplicated paper hard-links them instead of copying. When a paper is unloaded after being idle, images that no element uses (erased images included, until their tombstone is pruned) and that are more than 24 h old are deleted (`PaperStorage.removeUnusedFiles`).
 
 ## App (`whiteboard-app/src`)
 

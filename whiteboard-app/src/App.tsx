@@ -23,7 +23,16 @@ const loadEditor = () => import("./editor/PaperEditor");
 const PaperEditor = lazy(() =>
   loadEditor().then((module) => ({ default: module.PaperEditor })),
 );
-const EmbedPage = lazy(() => import("./editor/EmbedPage"));
+const loadEmbedPage = () => import("./editor/EmbedPage");
+const EmbedPage = lazy(loadEmbedPage);
+
+// opening a link to a paper: download the editor while the session is being
+// checked, instead of after (saves a round trip and the API call's time)
+if (/^\/p\//.test(window.location.pathname)) {
+  loadEditor().catch(() => {});
+} else if (/^\/embed\//.test(window.location.pathname)) {
+  loadEmbedPage().catch(() => {});
+}
 
 type AuthState =
   | { status: "loading" }

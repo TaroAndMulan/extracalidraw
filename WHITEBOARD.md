@@ -157,7 +157,7 @@ Set in `deploy/.env` (Docker) or as environment variables:
 
 ## Backups & updates
 
-All data lives in the `whiteboard-data` Docker volume (or `DATA_DIR`): a small `db.json` (accounts, papers) plus one folder per paper (pages as JSON, images).
+All data lives in the `whiteboard-data` Docker volume (or `DATA_DIR`): a small `db.json` (accounts, papers) plus one folder per paper (pages as gzipped JSON, images). Copies of a paper share its images (hard links, which `tar` keeps). The server tidies up after itself: images no longer used anywhere in a paper are deleted (30 days after they were erased), and so are the contents of pages deleted more than 30 days ago (`TOMBSTONE_TTL_DAYS`).
 
 ```bash
 # backup

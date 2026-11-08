@@ -27,6 +27,70 @@ export const isNewer = (incoming: Versioned, existing?: Versioned | null) =>
 const isFiniteNumber = (value: unknown): value is number =>
   typeof value === "number" && Number.isFinite(value);
 
+const isPoint = (value: unknown): value is [number, number] =>
+  Array.isArray(value) &&
+  value.length === 2 &&
+  isFiniteNumber(value[0]) &&
+  isFiniteNumber(value[1]);
+
+// -----------------------------------------------------------------------------
+// compact strokes
+// -----------------------------------------------------------------------------
+
+/**
+ * Stroke points are kept to 1/100 px and pressures to 1/1000. The editor
+ * computes points as `clientX / zoom - scrollX`, which gives 17-digit numbers:
+ * rounding them halves a page of handwriting (4× smaller compressed, on disk
+ * and on the wire) without any visible difference, even zoomed in.
+ */
+const POINT_PRECISION = 100;
+const PRESSURE_PRECISION = 1000;
+
+const roundTo = (value: number, precision: number) =>
+  Math.round(value * precision) / precision;
+
+/** the same array when nothing changed (so callers can tell) */
+const mapChanged = <T>(values: T[], map: (value: T) => T): T[] => {
+  let changed = false;
+  const next = values.map((value) => {
+    const mapped = map(value);
+    changed ||= mapped !== value;
+    return mapped;
+  });
+  return changed ? next : values;
+};
+
+const roundPoint = <T>(value: T): T => {
+  if (!isPoint(value)) {
+    return value;
+  }
+  const x = roundTo(value[0], POINT_PRECISION);
+  const y = roundTo(value[1], POINT_PRECISION);
+  return x === value[0] && y === value[1] ? value : ([x, y] as T);
+};
+
+const roundPressure = <T>(value: T): T =>
+  isFiniteNumber(value) ? (roundTo(value, PRESSURE_PRECISION) as T) : value;
+
+export const roundPoints = <T>(points: T[]) => mapChanged(points, roundPoint);
+
+export const roundPressures = <T>(pressures: T[]) =>
+  mapChanged(pressures, roundPressure);
+
+/** a stroke with rounded points; other elements (and compact strokes) as is */
+export const compactElement = (element: SyncedElement): SyncedElement => {
+  if (element.type !== "freedraw" || !Array.isArray(element.points)) {
+    return element;
+  }
+  const points = roundPoints(element.points as unknown[]);
+  const pressures = Array.isArray(element.pressures)
+    ? roundPressures(element.pressures as unknown[])
+    : element.pressures;
+  return points === element.points && pressures === element.pressures
+    ? element
+    : { ...element, points, pressures };
+};
+
 /** validates the fields the server relies on; the rest stays opaque */
 export const sanitizeElement = (value: unknown): SyncedElement | null => {
   if (!value || typeof value !== "object" || Array.isArray(value)) {
@@ -43,7 +107,7 @@ export const sanitizeElement = (value: unknown): SyncedElement | null => {
   ) {
     return null;
   }
-  return element as SyncedElement;
+  return compactElement(element as SyncedElement);
 };
 
 export const sanitizePage = (value: unknown): PageMeta | null => {
@@ -139,11 +203,6 @@ export const getLivePages = (pages: Iterable<PageMeta>) =>
 const MAX_PATCH_POINTS = 20_000;
 /** a stroke can't grow beyond this through patches */
 export const MAX_STROKE_POINTS = 100_000;
-const isPoint = (value: unknown): value is [number, number] =>
-  Array.isArray(value) &&
-  value.length === 2 &&
-  isFiniteNumber(value[0]) &&
-  isFiniteNumber(value[1]);
 
 /** validates an untrusted patch (see `ElementPatch`) */
 export const sanitizePatch = (value: unknown): ElementPatch | null => {
@@ -192,8 +251,8 @@ export const sanitizePatch = (value: unknown): ElementPatch | null => {
     version: patch.version,
     versionNonce: patch.versionNonce,
     set,
-    appendPoints: patch.appendPoints,
-    appendPressures: patch.appendPressures ?? [],
+    appendPoints: roundPoints(patch.appendPoints),
+    appendPressures: roundPressures(patch.appendPressures ?? []),
   };
 };
 

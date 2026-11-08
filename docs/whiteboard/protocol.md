@@ -70,6 +70,7 @@ While someone draws, a freedraw element grows by one point per pointer move. Ins
 - Server: applies patches after the message's full elements; relays the accepted ones as `patches`; answers the others with `paper:resend` when it's missing what they build on (the sender forgets what it sent of them and sends them in full).
 - Receivers: apply a patch on top of the copy queued from the same burst or the one in the scene; when it doesn't fit, they `paper:fetch` the element.
 - Anything else (color changed, points rewritten, erase, undo) is sent as a full element.
+- The server rounds stroke points to 1/100 px and pressures to 1/1000 (`compactElement` in `reconcile.ts`), in full elements and patches alike, before storing and relaying them. The point count never changes, so patches still line up; the sender keeps its unrounded copy (same version, so nothing is re-sent).
 
 ### Strokes still being drawn (`drawing`)
 
@@ -89,6 +90,6 @@ Image data goes over the live connection so others see it at once (`files.ts`):
 Elements and page metas are merged with the same total order Excalidraw uses (`shouldDiscardRemoteElement`): **higher `version` wins; equal versions → lower `versionNonce` wins**. Because the server and every client apply the same rule, everybody converges whatever the message order.
 
 - The server stores the winner and forwards only accepted updates.
-- Deletions are tombstones (`isDeleted: true`) so they win like any edit; tombstones older than `TOMBSTONE_TTL_DAYS` are dropped when a paper loads. Clients stop syncing deleted elements after a day (as excalidraw-app does).
+- Deletions are tombstones (`isDeleted: true`) so they win like any edit; tombstones older than `TOMBSTONE_TTL_DAYS` are dropped when a paper loads. Clients stop syncing deleted elements after a day (as excalidraw-app does). Deleted pages stay as tombstones in `pages.json`, but their elements are dropped once the page has been deleted for `TOMBSTONE_TTL_DAYS`.
 - Pages are ordered by fractional `index` (`generateKeyBetween`), ties broken by id. Concurrently created pages with the same index fall back to appending.
 - Element order within a page is the fractional `index` of elements.

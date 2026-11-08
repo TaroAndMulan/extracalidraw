@@ -2,6 +2,8 @@ import crypto from "node:crypto";
 import { existsSync } from "node:fs";
 import fs from "node:fs/promises";
 import path from "node:path";
+import { promisify } from "node:util";
+import zlib from "node:zlib";
 
 import type {
   PageMeta,
@@ -34,12 +36,38 @@ export const writeFileAtomic = async (
   await fs.rename(tmp, file);
 };
 
+const gzip = promisify(zlib.gzip);
+const gunzip = promisify(zlib.gunzip);
+
 const readJSON = async <T>(file: string): Promise<T | null> => {
   try {
     return JSON.parse(await fs.readFile(file, "utf8")) as T;
   } catch (error: any) {
     if (error.code === "ENOENT") {
       return null;
+    }
+    throw error;
+  }
+};
+
+const readGzipJSON = async <T>(file: string): Promise<T | null> => {
+  try {
+    const data = await gunzip(await fs.readFile(file));
+    return JSON.parse(data.toString("utf8")) as T;
+  } catch (error: any) {
+    if (error.code === "ENOENT") {
+      return null;
+    }
+    throw error;
+  }
+};
+
+const readDirIfExists = async (dir: string) => {
+  try {
+    return await fs.readdir(dir);
+  } catch (error: any) {
+    if (error.code === "ENOENT") {
+      return [];
     }
     throw error;
   }
@@ -385,7 +413,13 @@ export class PaperStorage {
     return path.join(this.dataDir, "papers", paperId);
   }
 
+  /** elements of a page, gzipped (JSON of handwriting shrinks ~5×) */
   private pageFile(paperId: string, pageId: string) {
+    return `${this.legacyPageFile(paperId, pageId)}.gz`;
+  }
+
+  /** where pages were stored before they were gzipped (still read) */
+  private legacyPageFile(paperId: string, pageId: string) {
     if (!isValidId(pageId)) {
       throw new Error(`invalid page id: ${pageId}`);
     }
@@ -396,25 +430,26 @@ export class PaperStorage {
     return path.join(this.paperDir(paperId), "files");
   }
 
-  async loadPaper(paperId: string) {
+  async loadPages(paperId: string) {
     const pages =
       (await readJSON<PageMeta[]>(
         path.join(this.paperDir(paperId), "pages.json"),
       )) ?? [];
-    const elements = new Map<string, SyncedElement[]>();
-    await Promise.all(
-      pages.map(async (page) => {
-        if (!isValidId(page.id)) {
-          return;
-        }
-        elements.set(
-          page.id,
-          (await readJSON<SyncedElement[]>(this.pageFile(paperId, page.id))) ??
-            [],
-        );
-      }),
+    return pages.filter((page) => isValidId(page?.id));
+  }
+
+  /** `legacy`: stored in the old format, worth saving again */
+  async loadPageElements(paperId: string, pageId: string) {
+    const elements = await readGzipJSON<SyncedElement[]>(
+      this.pageFile(paperId, pageId),
     );
-    return { pages, elements };
+    if (elements) {
+      return { elements, legacy: false };
+    }
+    const legacy = await readJSON<SyncedElement[]>(
+      this.legacyPageFile(paperId, pageId),
+    );
+    return { elements: legacy ?? [], legacy: !!legacy };
   }
 
   async savePages(paperId: string, pages: PageMeta[]) {
@@ -431,12 +466,14 @@ export class PaperStorage {
   ) {
     await writeFileAtomic(
       this.pageFile(paperId, pageId),
-      JSON.stringify(elements),
+      await gzip(JSON.stringify(elements)),
     );
+    await fs.rm(this.legacyPageFile(paperId, pageId), { force: true });
   }
 
   async deletePageElements(paperId: string, pageId: string) {
     await fs.rm(this.pageFile(paperId, pageId), { force: true });
+    await fs.rm(this.legacyPageFile(paperId, pageId), { force: true });
   }
 
   async deletePaper(paperId: string) {
@@ -445,9 +482,79 @@ export class PaperStorage {
 
   async duplicatePaper(sourceId: string, targetId: string) {
     const source = this.paperDir(sourceId);
-    if (existsSync(source)) {
-      await fs.cp(source, this.paperDir(targetId), { recursive: true });
+    if (!existsSync(source)) {
+      return;
     }
+    const target = this.paperDir(targetId);
+    const sourceFiles = this.fileDir(sourceId);
+    await fs.cp(source, target, {
+      recursive: true,
+      filter: (file) => file !== sourceFiles,
+    });
+    // images never change (their id is a hash of the content, and they're
+    // replaced, never written in place): copies share them through hard links,
+    // so a paper used as a template costs no space per copy
+    const names = await readDirIfExists(sourceFiles);
+    if (!names.length) {
+      return;
+    }
+    const targetFiles = this.fileDir(targetId);
+    await fs.mkdir(targetFiles, { recursive: true });
+    for (const name of names) {
+      if (name.endsWith(".tmp")) {
+        continue;
+      }
+      const from = path.join(sourceFiles, name);
+      const to = path.join(targetFiles, name);
+      try {
+        await fs.link(from, to);
+      } catch {
+        // e.g. a file system without hard links
+        await fs.copyFile(from, to);
+      }
+    }
+  }
+
+  /**
+   * Deletes images that no element of the paper uses (erased images stay
+   * until their element is pruned, see `TOMBSTONE_TTL_DAYS`). Only files
+   * older than `minAgeMs`: an image is uploaded just before (or after) the
+   * element that shows it reaches the server. Returns how many were deleted.
+   */
+  async removeUnusedFiles(
+    paperId: string,
+    usedFileIds: ReadonlySet<string>,
+    minAgeMs: number,
+    now = Date.now(),
+  ) {
+    const dir = this.fileDir(paperId);
+    // an image is `<fileId>` and `<fileId>.json` (its type), plus temp files
+    // (`<fileId>….tmp`) a crash may leave; ids have no dots
+    const byId = new Map<string, string[]>();
+    for (const name of await readDirIfExists(dir)) {
+      const fileId = name.split(".")[0];
+      byId.set(fileId, [...(byId.get(fileId) ?? []), name]);
+    }
+    let removed = 0;
+    for (const [fileId, names] of byId) {
+      if (usedFileIds.has(fileId) || !isValidId(fileId)) {
+        continue;
+      }
+      const stats = await Promise.all(
+        names.map((name) => fs.stat(path.join(dir, name)).catch(() => null)),
+      );
+      const newest = Math.max(0, ...stats.map((stat) => stat?.mtimeMs ?? 0));
+      if (now - newest < minAgeMs) {
+        continue;
+      }
+      // the data first (shortest name): without it the image counts as
+      // missing (`hasFile`), and can be uploaded again
+      for (const name of names.sort((a, b) => a.length - b.length)) {
+        await fs.rm(path.join(dir, name), { force: true });
+      }
+      removed++;
+    }
+    return removed;
   }
 
   async saveFile(

@@ -1,10 +1,12 @@
 import {
+  compactElement,
   getLivePages,
   isNewer,
   mergeVersioned,
   pruneTombstones,
   sanitizeElement,
   sanitizePage,
+  sanitizePatch,
   sortByIndex,
 } from "./reconcile";
 
@@ -144,5 +146,46 @@ describe("whiteboard-server reconcile", () => {
     ]);
     expect(pruneTombstones(map, 1000, now)).toBe(1);
     expect([...map.keys()]).toEqual(["recent", "alive"]);
+  });
+
+  it("rounds stroke points to 1/100 px and pressures to 1/1000", () => {
+    const stroke = el("s", 3, 1, {
+      type: "freedraw",
+      points: [
+        [0, 0],
+        [12.345678901234567, -3.0049999999999],
+        [277.42776459854015, 1e-9],
+      ],
+      pressures: [0.37109375, 0.5, 0.6669921875],
+    });
+    const compact = compactElement(stroke);
+    expect(compact.points).toEqual([
+      [0, 0],
+      [12.35, -3],
+      [277.43, 0],
+    ]);
+    expect(compact.pressures).toEqual([0.371, 0.5, 0.667]);
+    // everything else is kept, and the input isn't changed
+    expect(compact).toMatchObject({ id: "s", version: 3, versionNonce: 1 });
+    expect((stroke.points as number[][])[1][0]).toBe(12.345678901234567);
+    // already compact: the same object (nothing to save)
+    expect(compactElement(compact)).toBe(compact);
+    const rect = el("r", 1, 1, { points: [[0.123456, 0]] });
+    expect(compactElement(rect)).toBe(rect);
+    // incoming elements and patches are compacted
+    expect(sanitizeElement(stroke)!.points).toEqual(compact.points);
+    const patch = sanitizePatch({
+      id: "s",
+      baseVersion: 3,
+      baseVersionNonce: 1,
+      basePointCount: 3,
+      version: 4,
+      versionNonce: 2,
+      set: {},
+      appendPoints: [[1.23456, 7.891011]],
+      appendPressures: [0.123456],
+    })!;
+    expect(patch.appendPoints).toEqual([[1.23, 7.89]]);
+    expect(patch.appendPressures).toEqual([0.123]);
   });
 });
