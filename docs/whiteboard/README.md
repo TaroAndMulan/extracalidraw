@@ -23,7 +23,7 @@ Everything below is implemented, tested and on `main`:
 - **Embeds**: per-paper public link (`/embed/<id>#token=…`), view or edit, guests join without an account, reset/disable link, `EMBED_ALLOWED_ORIGINS`.
 - **LaTeX math** (MathJax → SVG image, editable via double-click) and **partially colored text** (color selected words; a small, self-contained change to the editor core).
 - **Tablets**: the pen draws (every point it reports), fingers pan and pinch-zoom, a resting palm is ignored (palm rejection), long press opens the menu, two/three-finger tap undoes/redoes; pen mode is remembered per device; the screen stays on during lessons; full screen (`editor/tabletInput.ts`, `device.ts`).
-- **Pen bar** (pens, highlighter, eraser) and **bars that fit** any tablet, portrait or landscape (`PenTray.tsx`, `TopRight.tsx`, `fit.ts`).
+- **Pen bar** (pens, highlighter, eraser), Excalidraw's **style panel tucked away** until wanted, and **bars that fit** any tablet, portrait or landscape (`PenTray.tsx`, `StylePanelToggle.tsx`, `TopRight.tsx`, `fit.ts`).
 - **Images**, export of the current page, **Print/PDF of all pages**.
 - **Deployment**: single Docker image (Node only) behind Caddy (bundled, automatic HTTPS) or your own nginx + certbot (an untracked override turns Caddy off). `deploy/deploy.sh` updates a server from your computer: checks, `:previous` image for `--rollback`, health and public checks, `--status`, `--backup`, `--ship-image`. In production behind nginx since 2026-11-08; see WHITEBOARD.md → "Already running nginx" and "Updates".
 

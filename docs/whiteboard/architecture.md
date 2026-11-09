@@ -62,7 +62,8 @@ Keeping it small (decisions.md → "Storage and loading"):
 | `editor/thumbnails.ts`, `print.ts` | Page previews; print/PDF of all pages. |
 | `editor/liveStrokes.ts` | Others' strokes while they're drawn, on an overlay canvas; they go into the page once finished (protocol.md → "Strokes still being drawn"). |
 | `editor/tabletInput.ts` | Tablets: palm rejection, finger navigation, long press → context menu, two/three-finger tap → undo/redo, in front of the editor (window capture listeners); pen mode remembered per device. See decisions.md → "Pen, fingers and palms". |
-| `editor/PenTray.tsx` | The pen bar (pens, highlighter, eraser, "fingers draw" toggle) and `widenHighlighterStroke`. |
+| `editor/PenTray.tsx` | The pen bar (pens, highlighter, eraser, "fingers draw" toggle) and `widenHighlighterStroke`; the default stroke width (thinnest). |
+| `editor/StylePanelToggle.tsx` | The button next to the menu (☰) that tucks Excalidraw's style panel away (the default) and brings it back, Alt+P; remembered per device. |
 | `editor/TopRight.tsx`, `fit.ts` | Math / Lock / View / Pages at the top right, and `useFitLevel`, which makes the top bar and the footer (page bar + pens) more compact until they fit. |
 | `editor/viewSync.ts` | Sharing the view (protocol.md → "Sharing the view"): view ↔ page-area math, `SharedArea` (what's sent when you move the shared view), `SharedViewTracker` (orders moves of several people), `ViewAnimator` (others' moves glide; recognizes views it set, so they aren't taken for the user's). Used by `session.ts`. |
 | `editor/viewBoxes.ts`, `ViewMenu.tsx` | "Where others are looking" (frames over the page, name tags at the screen's edge), and the _View_ menu (modes, look around / come back, the frames toggle). |

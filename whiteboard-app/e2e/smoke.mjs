@@ -234,7 +234,8 @@ const run = async () => {
       JSON.stringify({ whileDrawing, afterDrawing }),
     );
 
-    // partial text colors: color one word while editing
+    // partial text colors: color one word while editing, in the style panel
+    // (tucked away at first: its button brings it out, still editing)
     await admin.keyboard.press("t");
     await admin.mouse.click(450, 520);
     await admin.keyboard.type("Solve for x");
@@ -242,6 +243,20 @@ const run = async () => {
       document
         .querySelector("textarea.excalidraw-wysiwyg")
         .setSelectionRange(10, 11),
+    );
+    const panelBefore = await admin.evaluate(
+      () => !!document.querySelector(".App-menu__left")?.offsetParent,
+    );
+    await admin.click(".wb-style-toggle");
+    const panelAfter = await admin.evaluate(() => ({
+      shown: !!document.querySelector(".App-menu__left")?.offsetParent,
+      editing:
+        !!window.__whiteboard.excalidrawAPI.getAppState().editingTextElement,
+    }));
+    check(
+      "the style panel starts tucked away; its button brings it out",
+      !panelBefore && panelAfter.shown && panelAfter.editing,
+      JSON.stringify({ panelBefore, ...panelAfter }),
     );
     await admin.click('[data-testid="color-top-pick-#e03131"]');
     await admin.keyboard.press("Escape");

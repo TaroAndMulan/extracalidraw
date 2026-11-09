@@ -61,9 +61,18 @@ import { getMathData, placeMath } from "./math";
 import { MathDialog } from "./MathDialog";
 import { importIntoPaper } from "./NewPageMenu";
 import { PAGES_SIDEBAR, PagesSidebar } from "./PagesSidebar";
-import { PenTray, widenHighlighterStroke } from "./PenTray";
+import {
+  DEFAULT_STROKE_WIDTH,
+  PenTray,
+  widenHighlighterStroke,
+} from "./PenTray";
 import { printAllPages } from "./print";
 import { PaperSession, getPageLabel } from "./session";
+import {
+  StylePanelToggle,
+  hasStylePanel,
+  useStylePanelHidden,
+} from "./StylePanelToggle";
 import {
   getInitialPenState,
   installTabletInput,
@@ -277,8 +286,17 @@ const EditorView = ({
     useState<ExcalidrawImperativeAPI | null>(null);
   const [initialData] = useState(() => {
     const data = session.getInitialData();
-    return { ...data, appState: { ...data.appState, ...getInitialPenState() } };
+    return {
+      ...data,
+      appState: {
+        ...data.appState,
+        currentItemStrokeWidthKey: DEFAULT_STROKE_WIDTH,
+        ...getInitialPenState(),
+      },
+    };
   });
+  const stylePanel = useStylePanelHidden();
+  const toggleStylePanel = stylePanel.toggle;
   const [thumbnails] = useState(
     () => new PageThumbnails(session, () => apiRef.current),
   );
@@ -405,11 +423,15 @@ const EditorView = ({
         event.preventDefault();
         event.stopPropagation();
         session.addPage();
+      } else if (event.code === "KeyP" && session.getState().canEdit) {
+        event.preventDefault();
+        event.stopPropagation();
+        toggleStylePanel();
       }
     };
     window.addEventListener("keydown", onKeyDown, true);
     return () => window.removeEventListener("keydown", onKeyDown, true);
-  }, [session]);
+  }, [session, toggleStylePanel]);
 
   // warn before leaving with changes that didn't reach the server
   useEffect(() => {
@@ -565,7 +587,13 @@ const EditorView = ({
   );
 
   return (
-    <div className="wb-editor" ref={containerRef}>
+    <div
+      className={clsx("wb-editor", {
+        "wb-editor--style-panel-hidden": stylePanel.hidden,
+        "wb-editor--style-panel-sliding": stylePanel.sliding,
+      })}
+      ref={containerRef}
+    >
       <Excalidraw
         onExcalidrawAPI={onExcalidrawAPI}
         onInitialize={session.attach}
@@ -589,6 +617,15 @@ const EditorView = ({
             toggleTheme: true,
           },
         }}
+        // next to the menu (☰), whenever there's a style panel to show
+        renderTopLeftUI={(isMobile, appState) =>
+          !isMobile && hasStylePanel(appState, apiRef.current) ? (
+            <StylePanelToggle
+              hidden={stylePanel.hidden}
+              onToggle={toggleStylePanel}
+            />
+          ) : null
+        }
         renderTopRightUI={(isMobile) =>
           isMobile ? (
             <div className="wb-topright">

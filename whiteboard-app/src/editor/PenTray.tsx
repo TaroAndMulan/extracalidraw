@@ -23,6 +23,11 @@ export const PENS = [
   { name: "Green pen", color: "#2f9e44" },
 ] as const;
 
+/** handwriting: the editor starts with the thinnest stroke (Excalidraw's
+ * default is the middle one) */
+export const DEFAULT_STROKE_WIDTH: AppState["currentItemStrokeWidthKey"] =
+  "thin";
+
 export const HIGHLIGHTER = {
   color: "#ffd43b",
   opacity: 50,

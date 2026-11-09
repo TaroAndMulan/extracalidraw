@@ -1014,6 +1014,80 @@ label,
   }
 }
 
+// the style panel's button, next to the menu (☰) and looking like it.
+// Excalidraw puts the app's top-left UI before the menu; `order` moves it after
+.wb-style-toggle {
+  --wb-style-toggle-bg: var(--color-surface-low);
+
+  order: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: var(--lg-button-size, 2.25rem);
+  height: var(--lg-button-size, 2.25rem);
+  padding: 0;
+  border: none;
+  border-radius: var(--border-radius-lg, 8px);
+  background-color: var(--wb-style-toggle-bg);
+  box-shadow: 0 0 0 1px var(--color-surface-lowest);
+  color: var(--color-on-surface);
+  cursor: pointer;
+
+  svg {
+    width: 1.15rem;
+    height: 1.15rem;
+  }
+
+  &:hover {
+    --wb-style-toggle-bg: var(--color-surface-high);
+  }
+
+  &:active {
+    box-shadow: 0 0 0 1px var(--color-primary);
+  }
+
+  .excalidraw.theme--dark &:hover {
+    --wb-style-toggle-bg: #363541;
+  }
+}
+
+// the style panel, tucked away (see StylePanelToggle.tsx). `display: none`,
+// so that the editor stops keeping room for it (it measures the panel when
+// fitting the view). With it goes Excalidraw's pen-mode button below it on
+// tablets: the pen bar has the same button.
+.wb-editor--style-panel-hidden .App-menu_top__left {
+  .selected-shape-actions > .Island,
+  .ToolIcon__penMode {
+    display: none;
+    opacity: 0;
+    translate: -0.75rem 0;
+  }
+}
+
+// … and slides out and back in when toggled (where browsers can animate
+// `display`; elsewhere it just goes and comes)
+.wb-editor--style-panel-sliding .App-menu_top__left {
+  .selected-shape-actions > .Island,
+  .ToolIcon__penMode {
+    transition: opacity 0.15s ease-out, translate 0.15s ease-out,
+      display 0.15s allow-discrete;
+
+    @starting-style {
+      opacity: 0;
+      translate: -0.75rem 0;
+    }
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .wb-editor--style-panel-sliding .App-menu_top__left {
+    .selected-shape-actions > .Island,
+    .ToolIcon__penMode {
+      transition: none;
+    }
+  }
+}
+
 // the page bar and the pens at the bottom
 .wb-footerbar {
   display: flex;

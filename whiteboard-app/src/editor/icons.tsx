@@ -138,3 +138,17 @@ export const returnIcon = icon(
     <path d="M5 10h10a4.5 4.5 0 0 1 0 9h-2" />
   </>,
 );
+
+/** a window with its left panel, and which way the panel will go */
+const panelLeft = (arrow: string) =>
+  icon(
+    <>
+      <rect x="3.5" y="4" width="17" height="16" rx="2" />
+      <path d="M9.5 4v16" />
+      <path d={arrow} />
+    </>,
+  );
+/** the style panel is out: tap to tuck it away */
+export const panelLeftCloseIcon = panelLeft("M16 9.5l-2.5 2.5l2.5 2.5");
+/** the style panel is tucked away: tap to bring it back */
+export const panelLeftOpenIcon = panelLeft("M13.5 9.5l2.5 2.5l-2.5 2.5");

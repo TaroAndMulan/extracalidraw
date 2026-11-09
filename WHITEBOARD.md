@@ -12,7 +12,7 @@ This fork adds a self-hosted, multi-user whiteboard built on the Excalidraw edit
 - **LaTeX math**: insert formulas (_∑ Math_ or <kbd>Alt</kbd>+<kbd>M</kbd>) with a live preview and buttons for common structures and symbols; double-click a formula to edit it.
 - **Colored words**: while editing a text, select part of it and pick a color — only those words change color.
 - **Tablets with a pen** (iPad + Apple Pencil, Samsung/Android + S Pen): the pen writes — smoothly, with every point the pen reports — fingers pan and pinch-zoom, a hand resting on the screen while writing is ignored (palm rejection), two-finger tap undoes. Tablets without a pen draw with a finger. The screen stays on during a lesson.
-- **Pen bar**: one tap for a black, red, blue or green pen, a highlighter or the eraser.
+- **Pen bar**: one tap for a black, red, blue or green pen, a highlighter or the eraser; Excalidraw's style panel stays tucked away until you want it.
 - **Images**, export of a page as PNG/SVG/`.excalidraw`, and **Print / PDF of all pages**.
 - **Fast, also on weak connections and full pages**: what you write reaches the others as you write it — in step with your voice — with only the network delay added (strokes send just their new points; a slow link never piles up stale updates; a stroke being drawn is shown on its own layer, so a page full of notes on a tablet keeps up; your cursor follows your pen). A pasted screenshot shows up for others right away as a quick preview and sharpens once fully loaded. A single small Node.js process keeps open papers in memory; the app is served compressed and cached.
 
@@ -150,9 +150,12 @@ cd ~/extracalidraw && git pull && cd deploy && docker compose up -d --no-build
    People who can't draw (a locked paper, a view-only link) follow the shared view but don't move it. For yourself, in _View_: **Look around on my own** (the others aren't moved, and nothing moves you) — **Back to the shared view** (or the badge at the bottom) brings you back; moving the view when you can't draw, or following someone, does the same. **Show where others are looking** outlines what each person on your page sees, in the color of their cursor; someone looking elsewhere gets a name at the edge of the screen, pointing their way. It's on for the owner and admins, off for everyone else, and remembered on each device. _Bring everyone here_ also brings back those looking around.
 
 6. **Math** — _∑ Math_ (top right), <kbd>Alt</kbd>+<kbd>M</kbd> or menu → _Insert math (LaTeX)_. Type LaTeX (e.g. `\frac{a}{b}`, `x^2`, `\sqrt{x}`) or use the buttons, pick a color and size, then _Insert_ (<kbd>Ctrl</kbd>+<kbd>Enter</kbd>). Double-click a formula (or select it and press <kbd>Enter</kbd>) to change it. Chemistry works too: `\ce{H2O}`.
-7. **Color part of a text** — double-click a text to edit it, select the words, then click a color in the panel on the left. Picking the text's own color removes the coloring. New text you type continues the color of the character before it.
+7. **Color part of a text** — double-click a text to edit it, select the words, then click a color in the style panel (the button next to ☰ brings it out, see 9). Picking the text's own color removes the coloring. New text you type continues the color of the character before it.
 8. **Print / PDF** — menu (☰) → _Print / PDF (all pages)_; choose “Save as PDF” in the print dialog.
-9. **Pen bar** — at the bottom, next to the page bar: black, red, blue and green pens, a **highlighter** (wide, see-through yellow) and the **eraser**, one tap each. On narrow screens it shows fewer colors (the full palette is in the panel on the left).
+9. **Pen bar** — at the bottom, next to the page bar: black, red, blue and green pens, a **highlighter** (wide, see-through yellow) and the **eraser**, one tap each. On narrow screens it shows fewer colors.
+
+   **Style panel** — Excalidraw's panel with the full palette, background, stroke width, pressure, opacity and more starts tucked away, so the page has room and the pen bar is all you see. The button next to the menu (☰), or <kbd>Alt</kbd>+<kbd>P</kbd>, brings it out (›) and tucks it away again (‹); it appears whenever there's a panel to show (a drawing tool, a selection, a text being edited) and each device remembers the choice. New strokes start with the thinnest width.
+
 10. **Tablets & pens** — as soon as a pen touches (or hovers over) the screen, the whiteboard switches to _pen mode_:
 
 - the **pen** draws, selects, erases — everything a mouse does (double-tap a text or formula with the pen to edit it); hold it still for half a second with the selection tool for the menu (copy, paste, _Unlock_…);
