@@ -4,20 +4,21 @@ import clsx from "clsx";
 import { useRef } from "react";
 
 import { useFitLevel } from "./fit";
-import { lockIcon, pagesIcon, presentIcon, unlockIcon } from "./icons";
+import { lockIcon, pagesIcon, unlockIcon } from "./icons";
 import { PAGES_SIDEBAR } from "./PagesSidebar";
+import { ViewMenu, getViewStatus } from "./ViewMenu";
 
 import type { PaperSession, SessionState } from "./session";
 
 /**
- * Math, Lock, Present and Pages at the top right, as much as fits next to
+ * Math, Lock, View and Pages at the top right, as much as fits next to
  * Excalidraw's toolbar and the people in the paper:
  *
  * 0. buttons with labels
  * 1. icons only (tablets in landscape, a docked panel)
- * 2. only what's on (locked, presenting, reconnecting) and Pages — tablets
- *    in portrait. Present & Lock are always in the pages panel, Math in the
- *    menu (and Alt+M).
+ * 2. only what's on (locked, view shared, presenting, reconnecting) and
+ *    Pages — tablets in portrait. View & Lock are always in the pages panel,
+ *    Math in the menu (and Alt+M).
  * 3. not even Pages (the page bar opens the panel), and Excalidraw's own
  *    Library and laser buttons go too (they're in the main menu and the
  *    toolbar's ⋮ menu) — narrow tablets in portrait, like an iPad mini.
@@ -36,7 +37,7 @@ export const TopRight = ({
   const ref = useRef<HTMLDivElement>(null);
   const { openSidebar, collaborators } = useUIAppState();
   const locked = !!state.paper?.locked;
-  const presenting = state.presenter?.socketId === state.socketId;
+  const view = getViewStatus(state);
   const level = useFitLevel(
     ref,
     3,
@@ -44,7 +45,7 @@ export const TopRight = ({
       state.canEdit,
       state.canManage,
       locked,
-      presenting,
+      view.label,
       state.status,
       state.followers,
       collaborators.size,
@@ -110,21 +111,13 @@ export const TopRight = ({
               {labels && " View only"}
             </span>
           )}
-      {state.canManage && (!minimal || presenting) && (
-        <button
-          type="button"
-          className={clsx(pill, { "wb-pill--active": presenting })}
-          onClick={() => session.setPresenting(!presenting)}
-          aria-pressed={presenting}
-          title={
-            presenting
-              ? "Everyone follows your view and page. Click to stop."
-              : "Present: everyone follows your view and page"
-          }
-        >
-          {presentIcon}
-          {labels && (presenting ? "Presenting" : "Present")}
-        </button>
+      {(!minimal || view.active) && (
+        <ViewMenu
+          session={session}
+          state={state}
+          variant="pill"
+          labels={labels}
+        />
       )}
       {state.followers > 0 && (
         <span className="wb-pill" title="People following your view">

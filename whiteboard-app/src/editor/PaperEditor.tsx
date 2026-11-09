@@ -53,6 +53,7 @@ import {
   pagesIcon,
   plusIcon,
   printIcon,
+  returnIcon,
   shareIcon,
 } from "./icons";
 import { LibraryIndexedDBAdapter } from "./library";
@@ -335,14 +336,19 @@ const EditorView = ({
     return () => container.removeEventListener("drop", onDrop, true);
   }, [session]);
 
-  // others' strokes while they draw them (see liveStrokes.ts)
+  // others' strokes while they draw them (see liveStrokes.ts), and where
+  // others are looking (viewBoxes.ts)
   useEffect(() => {
     const root = containerRef.current;
     if (!root) {
       return;
     }
     session.liveStrokes.mount(root);
-    return () => session.liveStrokes.unmount();
+    session.viewBoxes.mount(root);
+    return () => {
+      session.liveStrokes.unmount();
+      session.viewBoxes.unmount();
+    };
   }, [session]);
 
   // tablets: the pen draws, fingers move the view, a resting palm does
@@ -515,10 +521,20 @@ const EditorView = ({
     [session],
   );
 
-  // a frame around the canvas while following someone (e.g. the presenter)
+  // a frame around the canvas while following someone (e.g. the
+  // presenter); a way back after looking around on your own while the view
+  // is shared, or after leaving a presentation
   const followed = state.userToFollow;
-  const isPresenter =
-    !!followed && state.presenter?.socketId === followed.socketId;
+  const presenter = state.presenter;
+  const isPresenter = !!followed && presenter?.socketId === followed.socketId;
+  const backTo =
+    followed || !state.paper
+      ? null
+      : presenter && presenter.socketId !== state.socketId
+      ? `Back to ${presenter.name}'s view`
+      : state.paper.viewSync !== "free" && !presenter && state.viewDetached
+      ? "Back to the shared view"
+      : null;
   const viewportStatusFrame = useMemo(
     () =>
       followed
@@ -535,8 +551,17 @@ const EditorView = ({
               onClose: () => session.follow(null),
             },
           }
+        : backTo
+        ? {
+            border: false as const,
+            label: {
+              label: <span className="wb-follow-label">{backTo}</span>,
+              icon: returnIcon,
+              onClick: () => session.rejoinSharedView(),
+            },
+          }
         : null,
-    [followed, isPresenter, session],
+    [followed, isPresenter, backTo, session],
   );
 
   return (

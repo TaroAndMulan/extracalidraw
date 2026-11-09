@@ -520,6 +520,151 @@ describe("whiteboard server: real-time", () => {
     expect((await stopped).presenter).toBe(null);
   });
 
+  it("shared view: managers choose how the view is shared, and it's kept", async () => {
+    const admin = connect(adminCookie);
+    const maya = connect(memberCookie);
+    expect((await joinOk(admin, paper.id)).paper.viewSync).toBe("free");
+    await joinOk(maya, paper.id);
+
+    // members can't change it, nonsense is ignored
+    const ignored = record(admin, "paper:settings");
+    maya.emit("paper:viewSync", { mode: "view" });
+    admin.emit("paper:viewSync", { mode: "sideways" as any });
+    await wait(100);
+    expect(ignored).toHaveLength(0);
+
+    const settings = next(maya, "paper:settings");
+    admin.emit("paper:viewSync", { mode: "view" });
+    expect((await settings).viewSync).toBe("view");
+    expect(
+      (await request(adminCookie, "GET", `/api/papers/${paper.id}`)).data.paper
+        .viewSync,
+    ).toBe("view");
+
+    // also through the REST API, validated
+    expect(
+      (
+        await request(adminCookie, "PATCH", `/api/papers/${paper.id}`, {
+          viewSync: "everywhere",
+        })
+      ).status,
+    ).toBe(400);
+    const patched = next(maya, "paper:settings");
+    await request(adminCookie, "PATCH", `/api/papers/${paper.id}`, {
+      viewSync: "page",
+    });
+    expect((await patched).viewSync).toBe("page");
+
+    // a copy of the paper shares the view the same way
+    const { data } = await request(
+      adminCookie,
+      "POST",
+      `/api/papers/${paper.id}/duplicate`,
+      {},
+    );
+    expect(data.paper.viewSync).toBe("page");
+  });
+
+  it("shared view: moves are relayed in one order, with the latest for newcomers", async () => {
+    const admin = connect(adminCookie);
+    const maya = connect(memberCookie);
+    const joined = await joinOk(admin, paper.id);
+    expect(joined.sharedView).toBe(null);
+    await joinOk(maya, paper.id);
+    const pageId = joined.pages[0].id;
+    const move = (
+      socket: ClientSocket,
+      data: { pageId: string; bounds: any },
+    ) =>
+      new Promise<number | null>((resolve) =>
+        socket.emit("paper:view", data, ({ seq }) => resolve(seq)),
+      );
+
+    // nobody shares the view yet
+    expect(await move(admin, { pageId, bounds: [0, 0, 100, 50] })).toBe(null);
+
+    admin.emit("paper:viewSync", { mode: "view" });
+    await next(maya, "paper:settings");
+
+    const mayaSees = next(maya, "paper:view");
+    const adminSent = record(admin, "paper:view");
+    const first = await move(admin, { pageId, bounds: [0, 0, 100, 50] });
+    expect(first).toEqual(expect.any(Number));
+    expect(await mayaSees).toEqual({
+      pageId,
+      bounds: [0, 0, 100, 50],
+      seq: first,
+      socketId: admin.id,
+      by: "Admin",
+    });
+
+    const adminSees = next(admin, "paper:view");
+    const second = await move(maya, { pageId, bounds: [10, 10, 60, 40] });
+    expect(second).toBeGreaterThan(first!);
+    expect((await adminSees).seq).toBe(second);
+    // nobody gets their own moves back
+    expect(adminSent.map((view) => view.socketId)).toEqual([maya.id]);
+
+    // invalid moves are refused: unknown page, empty area, bad numbers
+    expect(await move(maya, { pageId: "nope", bounds: null })).toBe(null);
+    expect(await move(maya, { pageId, bounds: [5, 5, 5, 9] })).toBe(null);
+    expect(await move(maya, { pageId, bounds: ["a", 0, 1, 1] })).toBe(null);
+    // a page turn alone ("same page") has no bounds
+    const third = await move(maya, { pageId, bounds: null });
+    expect(third).toBeGreaterThan(second!);
+
+    // newcomers start where everyone is
+    const late = connect(adminCookie);
+    expect((await joinOk(late, paper.id)).sharedView).toMatchObject({
+      pageId,
+      bounds: null,
+      seq: third,
+    });
+
+    // people who can't draw follow the view but don't move it
+    admin.emit("paper:lock", { locked: true });
+    await nextMatching(maya, "paper:presence", ({ presence }) =>
+      presence.some((p) => p.userId === member.id && !p.canEdit),
+    );
+    expect(await move(maya, { pageId, bounds: [0, 0, 1, 1] })).toBe(null);
+
+    // back to everyone on their own: the shared view is forgotten
+    admin.emit("paper:viewSync", { mode: "free" });
+    await next(maya, "paper:settings");
+    const again = connect(adminCookie);
+    expect((await joinOk(again, paper.id)).sharedView).toBe(null);
+  });
+
+  it("where others look: views are relayed to people on the same page", async () => {
+    const admin = connect(adminCookie);
+    const maya = connect(memberCookie);
+    const joined = await joinOk(admin, paper.id);
+    await joinOk(maya, paper.id);
+    const pageId = joined.pages[0].id;
+    admin.emit("paper:pages", { pages: [newPage("p2", "a1")] });
+    admin.emit("paper:presence", { pageId });
+    maya.emit("paper:presence", { pageId });
+    await wait(100);
+
+    const seen = next(admin, "paper:viewbox");
+    maya.emit("paper:viewbox", { pageId, bounds: [1, 2, 300, 200] });
+    expect(await seen).toEqual({
+      socketId: maya.id,
+      pageId,
+      bounds: [1, 2, 300, 200],
+    });
+
+    // not for another page than the one the sender is on
+    const elsewhere = record(admin, "paper:viewbox");
+    maya.emit("paper:viewbox", { pageId: "p2", bounds: [1, 2, 300, 200] });
+    // nor to people on another page
+    admin.emit("paper:presence", { pageId: "p2" });
+    await wait(50);
+    maya.emit("paper:viewbox", { pageId, bounds: [1, 2, 300, 200] });
+    await wait(100);
+    expect(elsewhere).toHaveLength(0);
+  });
+
   it("kicks people who lose access", async () => {
     const maya = connect(memberCookie);
     await joinOk(maya, paper.id);

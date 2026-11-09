@@ -116,3 +116,25 @@ export const fullscreenIcon = icon(
     <path d="M16 20h2a2 2 0 0 0 2 -2v-2" />
   </>,
 );
+
+export const viewIcon = icon(
+  <>
+    <path d="M2.5 12s3.5-6.5 9.5-6.5s9.5 6.5 9.5 6.5s-3.5 6.5-9.5 6.5S2.5 12 2.5 12z" />
+    <circle cx="12" cy="12" r="2.75" />
+  </>,
+);
+
+/** two screens showing the same thing */
+export const togetherIcon = icon(
+  <>
+    <rect x="2.5" y="4.5" width="12" height="9" rx="1.5" />
+    <rect x="9.5" y="10.5" width="12" height="9" rx="1.5" />
+  </>,
+);
+
+export const returnIcon = icon(
+  <>
+    <path d="M9 14l-4-4l4-4" />
+    <path d="M5 10h10a4.5 4.5 0 0 1 0 9h-2" />
+  </>,
+);

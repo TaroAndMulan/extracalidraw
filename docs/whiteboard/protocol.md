@@ -9,9 +9,9 @@ A socket/request acts as either a **user** (session cookie `wb_session`) or a **
 |  | admin | paper owner | member (shared) | member (locked paper) | guest, link "edit" | guest, link "view" |
 | --- | :-: | :-: | :-: | :-: | :-: | :-: |
 | open the paper | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
-| draw, add/rename/reorder pages, upload images | ✓ | ✓ | ✓ | – | ✓ (unless locked) | – |
+| draw, add/rename/reorder pages, upload images, move the shared view | ✓ | ✓ | ✓ | – | ✓ (unless locked) | – |
 | delete pages | ✓ | ✓ | – | – | – | – |
-| lock, present, bring everyone here, link settings | ✓ | ✓ | – | – | – | – |
+| lock, present, choose how the view is shared, bring everyone here, link settings | ✓ | ✓ | – | – | – | – |
 | create/delete papers, manage people | ✓ | – | – | – | – | – |
 
 Code: `canAccessPaper`, `canEditPaper`, `canManagePaper`, `canGuestEdit`, `isValidShareToken` in `realtime.ts`; `PaperHub.getPermissions` is the single place that combines them for sockets.
@@ -30,8 +30,8 @@ All mutating requests need `Content-Type: application/json` (except binary uploa
 | `GET/POST /api/users`, `PATCH/DELETE /api/users/:id` | admin | can't remove own admin access or the last admin |
 | `GET /api/papers` | user | papers the user can access; `shareToken` only for managers |
 | `POST /api/papers` | admin | `{ title, memberIds }` |
-| `GET/PATCH/DELETE /api/papers/:id` | access / manage | PATCH: `{ title?, memberIds?, locked? }` |
-| `POST /api/papers/:id/duplicate` | admin | copies pages & images |
+| `GET/PATCH/DELETE /api/papers/:id` | access / manage | PATCH: `{ title?, memberIds?, locked?, viewSync? }` |
+| `POST /api/papers/:id/duplicate` | admin | copies pages & images (and `viewSync`) |
 | `POST /api/papers/:id/share` | manage | `{ enabled, access?: "view"\|"edit", regenerate? }` |
 | `GET /api/papers/:id/public` | user or `X-Share-Token` | what the embed page needs before joining |
 | `PUT/GET /api/papers/:id/files/:fileId` | edit / access, or `X-Share-Token` | images only; immutable (content-hash ids) |
@@ -45,7 +45,7 @@ Client → server:
 
 | Event | Payload | Notes |
 | --- | --- | --- |
-| `paper:join` (ack) | `{ paperId, shareToken?, guest? }` | ack `{ ok, data: JoinPaperResult }`: pages, elements of all live pages, presence, permissions, presenter |
+| `paper:join` (ack) | `{ paperId, shareToken?, guest? }` | ack `{ ok, data: JoinPaperResult }`: pages, elements of all live pages, presence, permissions, presenter, `sharedView` |
 | `paper:elements` | `{ pageId, elements, patches?, drawing? }` | changed elements only; strokes being drawn as `patches` and listed in `drawing` (see below); refused edits → `paper:resync` to the sender; patches that don't fit → `paper:resend` to the sender |
 | `paper:fetch` | `{ pageId, ids }` | asks for the current full elements (a received patch didn't fit the local copy) → `paper:elements` |
 | `paper:file` (ack) | `{ fileId, mimeType, preview? }`, bytes | an image over the live connection, passed on to the paper right away. Full files are stored too (ack `{ ok }` once stored); `preview: true` (≤ 512 KB) is only passed on |
@@ -55,13 +55,25 @@ Client → server:
 | `paper:idle` (volatile) | `{ state }` | active / idle / away |
 | `paper:follow` | `{ socketId, action }` | joins `follow:<socketId>`; the followed socket gets `paper:followers` |
 | `paper:viewport` | `{ pageId, bounds }` | sent by followed sockets to their followers |
+| `paper:view` (ack) | `{ pageId, bounds \| null }` | moves the shared view (`viewSync` not `"free"`, sender can edit); ack `{ seq }` (`null`: refused), see below |
+| `paper:viewbox` | `{ pageId, bounds }` | what this socket sees, relayed to sockets on the same page ("where others are looking") |
 | `paper:summon` | `{ pageId, bounds }` | managers: move everyone |
 | `paper:lock` | `{ locked }` | managers |
+| `paper:viewSync` | `{ mode }` | managers: `"free"`, `"page"` or `"view"`, stored with the paper |
 | `paper:present` | `{ on }` | managers: presenter mode |
 
-Server → client: `paper:elements` (`{ pageId, elements, patches?, drawing? }`), `paper:resend` (`{ pageId, ids }`: send these in full), `paper:file` (`meta`, bytes), `paper:fileStored` (`{ fileId }`: an HTTP upload finished, download now), `paper:pages`, `paper:resync`, `paper:presence`, `paper:pointer`, `paper:idle`, `paper:followers`, `paper:viewport`, `paper:summon`, `paper:settings` (`{ locked, title }`), `paper:presenter`, `paper:removed` (paper deleted / access lost).
+Server → client: `paper:elements` (`{ pageId, elements, patches?, drawing? }`), `paper:resend` (`{ pageId, ids }`: send these in full), `paper:file` (`meta`, bytes), `paper:fileStored` (`{ fileId }`: an HTTP upload finished, download now), `paper:pages`, `paper:resync`, `paper:presence`, `paper:pointer`, `paper:idle`, `paper:followers`, `paper:viewport`, `paper:view` (`SharedView & { by }`), `paper:viewbox` (`{ socketId, pageId, bounds }`), `paper:summon`, `paper:settings` (`{ locked, title, viewSync }`), `paper:presenter`, `paper:removed` (paper deleted / access lost).
 
 Rooms: `paper:<id>` (everyone in a paper), `page:<paperId>:<pageId>` (cursors), `follow:<socketId>` (followers of a socket).
+
+### Sharing the view (`viewSync`)
+
+A paper's `viewSync` (in `PaperSummary`, changed with `paper:viewSync` or PATCH) says how the view is shared: `"free"` (everyone on their own), `"page"` (page turns are shared) or `"view"` (one view for everyone: page, pan and zoom). Presenter mode works on top of any of them and suspends the shared view while it lasts. The app's side is in `editor/viewSync.ts` and the "sharing the view" section of `session.ts`.
+
+- **A move** (`paper:view`) is the page and, in `"view"` mode, the **area of the page** to show (`bounds`; `null` for a page turn in `"page"` mode). Each screen fits the area in. The mover sends the area that stays put on their screen (`SharedArea`), not their whole screen, so screens of different shapes don't zoom out a little more on every hand-over.
+- **Order**: the server stores the latest move (`LivePaper.sharedView`, given to newcomers in `JoinPaperResult.sharedView`), numbers it (`seq`, growing from the clock so it keeps growing across reloads of the paper), relays it to everyone else and acks the sender with the number. A socket's acks and the moves relayed to it leave the server in the order the server handled them, so a client ignores others' moves that arrive while one of its own is unacknowledged (they were numbered before it) and shows only moves numbered after its own (`SharedViewTracker`). Everyone ends where the server's last move is, even when two people move at once.
+- Moves are refused (ack `{ seq: null }`) when `viewSync` is `"free"`, the sender can't edit, or the page is unknown or deleted. People who can't edit follow the shared view; moving it themselves "looks around on their own" (client-side).
+- Switching to `"free"` forgets the shared view. `paper:viewbox` is independent of the mode: sent (throttled) while others are on the same page, and again when someone comes to it.
 
 ### Stroke patches
 

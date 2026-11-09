@@ -7,6 +7,17 @@
 
 export type Role = "admin" | "member";
 
+/**
+ * How the view (page, pan & zoom) is shared in a paper:
+ * - `free`: everyone moves around on their own
+ * - `page`: page turns are shared, zoom & pan are everyone's own
+ * - `view`: one view for everyone; whoever moves it moves everyone
+ * Presenter mode (everyone follows one person) works on top of any of them.
+ */
+export type ViewSync = "free" | "page" | "view";
+
+export const VIEW_SYNC_MODES: readonly ViewSync[] = ["free", "page", "view"];
+
 export interface PublicUser {
   id: string;
   username: string;
@@ -35,6 +46,8 @@ export interface PaperSummary {
   shareToken: string | null;
   /** what people joining through the public link may do */
   shareAccess: "view" | "edit";
+  /** how the view is shared (see `ViewSync`) */
+  viewSync: ViewSync;
 }
 
 /**
@@ -125,6 +138,21 @@ export interface JoinPaperResult {
   isGuest: boolean;
   /** someone everyone follows (presenter mode) */
   presenter: Presenter | null;
+  /** the shared view (`viewSync` "page"/"view"), `null` until someone moved */
+  sharedView: SharedView | null;
+}
+
+/**
+ * The view everyone shares when `viewSync` isn't "free". `bounds` is the
+ * area of the page everyone should see (each screen fits it in); `seq`
+ * orders the moves of different people the same way for everyone.
+ */
+export interface SharedView {
+  pageId: string;
+  bounds: SceneBounds | null;
+  seq: number;
+  /** who moved it */
+  socketId: string;
 }
 
 export interface Presenter {
@@ -191,11 +219,21 @@ export interface ClientToServerEvents {
     action: "FOLLOW" | "UNFOLLOW";
   }) => void;
   "paper:viewport": (data: { pageId: string; bounds: SceneBounds }) => void;
+  /** moves the shared view (`viewSync` "page"/"view"); ack: its `seq`, or
+   * `null` when it was refused */
+  "paper:view": (
+    data: { pageId: string; bounds: SceneBounds | null },
+    ack?: (response: { seq: number | null }) => void,
+  ) => void;
+  /** what this socket sees, for "where others are looking" */
+  "paper:viewbox": (data: { pageId: string; bounds: SceneBounds }) => void;
   "paper:summon": (data: {
     pageId: string;
     bounds: SceneBounds | null;
   }) => void;
   "paper:lock": (data: { locked: boolean }) => void;
+  /** managers: how the view is shared */
+  "paper:viewSync": (data: { mode: ViewSync }) => void;
   /** start/stop presenting: everyone follows the presenter's view & page */
   "paper:present": (data: { on: boolean }) => void;
 }
@@ -236,12 +274,23 @@ export interface ServerToClientEvents {
     pageId: string;
     bounds: SceneBounds;
   }) => void;
+  /** someone moved the shared view */
+  "paper:view": (data: SharedView & { by: string }) => void;
+  "paper:viewbox": (data: {
+    socketId: string;
+    pageId: string;
+    bounds: SceneBounds;
+  }) => void;
   "paper:summon": (data: {
     pageId: string;
     bounds: SceneBounds | null;
     by: string;
   }) => void;
-  "paper:settings": (data: { locked: boolean; title: string }) => void;
+  "paper:settings": (data: {
+    locked: boolean;
+    title: string;
+    viewSync: ViewSync;
+  }) => void;
   "paper:presenter": (data: { presenter: Presenter | null }) => void;
   /** the paper was deleted or the user lost access to it */
   "paper:removed": (data: { reason: string }) => void;

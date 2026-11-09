@@ -155,6 +155,7 @@ export class Database {
     for (const paper of data.papers) {
       paper.shareToken ??= null;
       paper.shareAccess ??= "edit";
+      paper.viewSync ??= "free";
     }
     const db = new Database(file, data);
     db.pruneSessions();
@@ -341,6 +342,7 @@ export class Database {
     ownerId: string;
     memberIds: string[];
     id?: string;
+    viewSync?: PaperRecord["viewSync"];
   }) {
     const now = Date.now();
     const paper: PaperRecord = {
@@ -355,6 +357,7 @@ export class Database {
       thumbnailVersion: null,
       shareToken: null,
       shareAccess: "edit",
+      viewSync: input.viewSync ?? "free",
     };
     this.data.papers.push(paper);
     this.save();
@@ -375,6 +378,7 @@ export class Database {
         | "thumbnailVersion"
         | "shareToken"
         | "shareAccess"
+        | "viewSync"
       >
     >,
   ) {

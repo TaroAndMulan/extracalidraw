@@ -28,6 +28,9 @@ html
 meta*.json
 .claude
 
-# self-hosted whiteboard secrets
+# self-hosted whiteboard: secrets and per-server settings (never tracked:
+# a tracked file at these paths would break `git pull` on servers that have one)
 deploy/.env
+deploy/.deploy.env
+deploy/docker-compose.override.yml
 whiteboard-server/data

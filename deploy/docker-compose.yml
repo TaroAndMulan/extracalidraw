@@ -3,6 +3,8 @@
 #   cp .env.example .env    # then edit DOMAIN and ADMIN_PASSWORD
 #   docker compose up -d --build
 #
+# nginx already on 80/443? Don't edit this file (git pull would stop working):
+# copy docker-compose.override.nginx.example.yml to docker-compose.override.yml.
 # See ../WHITEBOARD.md for details.
 
 services:

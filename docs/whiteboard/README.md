@@ -18,20 +18,23 @@ Everything below is implemented, tested and on `main`:
 - **Accounts**: admin creates people (one by one or many at once), resets passwords, disables/deletes accounts. Roles: `admin`, `member`.
 - **Papers**: created by admins, shared with chosen members; rename, duplicate (templates), delete; dashboard with cover thumbnails.
 - **Pages**: add (blank / lined / grid / dotted / from PDF or images), rename, reorder by drag & drop, duplicate, delete (owner/admin only); pages panel with live thumbnails; page bar; keyboard shortcuts.
-- **Real-time**: drawing, cursors, laser, selections; presence per page; follow a person; **presenter mode** (everyone follows); **bring everyone here**; **lock** (view-only for everyone but the owner/admins); offline edits are sent after reconnecting. Others' strokes still being drawn are shown on their own layer (`editor/liveStrokes.ts`), so a page full of notes on a tablet keeps up (~28 ms instead of ~112 ms on a 4× slowed CPU, see decisions.md → "Live strokes").
+- **Real-time**: drawing, cursors, laser, selections; presence per page; follow a person; **bring everyone here**; **lock** (view-only for everyone but the owner/admins); offline edits are sent after reconnecting.
+- **Sharing the view** (_View_ menu, per paper): on their own, **same page** (page turns shared), **together** (one camera for everyone, like Bitpaper — anyone moves it, any screen shape, no drift, one order when two move at once), **follow me** (presenter mode); look around on your own and come back; **where others are looking** (frames of others' views). Others' moves glide. See protocol.md → "Sharing the view" and decisions.md. Others' strokes still being drawn are shown on their own layer (`editor/liveStrokes.ts`), so a page full of notes on a tablet keeps up (~28 ms instead of ~112 ms on a 4× slowed CPU, see decisions.md → "Live strokes").
 - **Embeds**: per-paper public link (`/embed/<id>#token=…`), view or edit, guests join without an account, reset/disable link, `EMBED_ALLOWED_ORIGINS`.
 - **LaTeX math** (MathJax → SVG image, editable via double-click) and **partially colored text** (color selected words; a small, self-contained change to the editor core).
 - **Tablets**: the pen draws (every point it reports), fingers pan and pinch-zoom, a resting palm is ignored (palm rejection), long press opens the menu, two/three-finger tap undoes/redoes; pen mode is remembered per device; the screen stays on during lessons; full screen (`editor/tabletInput.ts`, `device.ts`).
 - **Pen bar** (pens, highlighter, eraser) and **bars that fit** any tablet, portrait or landscape (`PenTray.tsx`, `TopRight.tsx`, `fit.ts`).
 - **Images**, export of the current page, **Print/PDF of all pages**.
-- **Deployment**: single Docker image (Node only) + Caddy for HTTPS (`deploy/`). Tested with Docker, Compose and Caddy.
+- **Deployment**: single Docker image (Node only) behind Caddy (bundled, automatic HTTPS) or your own nginx + certbot (an untracked override turns Caddy off). `deploy/deploy.sh` updates a server from your computer: checks, `:previous` image for `--rollback`, health and public checks, `--status`, `--backup`, `--ship-image`. In production behind nginx since 2026-11-08; see WHITEBOARD.md → "Already running nginx" and "Updates".
 
 ## Where the code is
 
 ```
 whiteboard-server/   Node.js server (TypeScript, bundled with esbuild)
 whiteboard-app/      React app (Vite) using the Excalidraw package from packages/
-deploy/              docker-compose.yml + Caddyfile + .env.example
+deploy/              docker-compose.yml + Caddyfile + .env.example (Caddy setup)
+                     docker-compose.override.nginx.example.yml + nginx.conf.example (your own nginx)
+                     deploy.sh + .deploy.env.example (deploy from your computer)
 WHITEBOARD.md        user documentation
 docs/whiteboard/     these notes
 ```
@@ -51,6 +54,10 @@ npm run test:typecheck            # tsc for packages + app, and for the server
 npm run whiteboard:build          # production build (app + server bundle)
 npm run whiteboard:e2e -- http://localhost:3002 admin <password>   # browser smoke test
 npm run whiteboard:e2e:tablet -- http://localhost:3002 admin <password>   # pen, fingers & palm in a real browser
+npm run whiteboard:e2e:view -- http://localhost:3002 admin <password>     # sharing the view: laptop + portrait tablet
+
+deploy/deploy.sh --status         # production: what runs, health, public checks (changes nothing)
+deploy/deploy.sh                  # deploy GitHub's main (commit + push first; settings in deploy/.deploy.env)
 ```
 
 `npm run <script>` and `yarn <script>` are interchangeable. Before committing, the repo's usual checks apply (see `/CLAUDE.md`): `npm run test:typecheck`, `npm run test:code` (eslint, 0 warnings), `npm run test:other` (prettier) and `npm run test:update` (the whole vitest suite).

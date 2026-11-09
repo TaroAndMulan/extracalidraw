@@ -38,7 +38,6 @@ import type {
   Collaborator,
   ExcalidrawImperativeAPI,
   Gesture,
-  NormalizedZoomValue,
   OnUserFollowedPayload,
   SocketId,
   UserToFollow,
@@ -55,10 +54,21 @@ import { FileSync } from "./files";
 import { LiveStrokes } from "./liveStrokes";
 import { createPatch, snapshotElement } from "./strokePatches";
 import { createBackgroundElements } from "./importPages";
+import { ViewBoxes } from "./viewBoxes";
+import {
+  SharedArea,
+  SharedViewTracker,
+  ViewAnimator,
+  fitView,
+  toAppState,
+  viewOf,
+  visibleBounds,
+} from "./viewSync";
 
 import type { BackgroundPage } from "./importPages";
 
 import type { SentSnapshot } from "./strokePatches";
+import type { Size, View } from "./viewSync";
 import type {
   ElementPatch,
   JoinPaperResult,
@@ -70,7 +80,9 @@ import type {
   SceneBounds,
   ClientToServerEvents,
   ServerToClientEvents,
+  SharedView,
   SyncedElement,
+  ViewSync,
 } from "../../../whiteboard-server/src/protocol";
 
 import type { Socket } from "socket.io-client";
@@ -103,6 +115,10 @@ export interface SessionState {
   isGuest: boolean;
   /** presenter mode: everyone follows this person */
   presenter: Presenter | null;
+  /** looking around on your own while the view is shared (`viewSync`) */
+  viewDetached: boolean;
+  /** "where others are looking": frames of what others see */
+  showViewBoxes: boolean;
 }
 
 /** deleted elements are synced for a day so others learn about deletions */
@@ -133,6 +149,56 @@ const isLiveStrokesOn = () => {
   }
 };
 const IDLE_TIMEOUT_MS = 60_000;
+
+/** sharing the view: at most one move per this, while moving */
+const VIEW_SEND_INTERVAL_MS = 50;
+/** others' moves glide over this long (a new one continues from there) */
+const VIEW_GLIDE_MS = 150;
+/** one-off moves (showing what someone sees) glide a little longer */
+const VIEW_JUMP_MS = 400;
+/** "where others are looking": at most one update per this */
+const VIEW_BOX_INTERVAL_MS = 150;
+/** a change of the view this soon after the user touched, clicked, scrolled
+ * or pressed a key is theirs (an animation of the editor's may still run) */
+const USER_INPUT_WINDOW_MS = 1500;
+const VIEW_BOXES_KEY = "whiteboard-view-boxes";
+
+/** whether this device shows where others are looking (default: for those
+ * who run the lesson) */
+const getViewBoxesPreference = () => {
+  try {
+    const value = localStorage.getItem(VIEW_BOXES_KEY);
+    return value === null ? null : value === "true";
+  } catch {
+    return null;
+  }
+};
+
+/** input that means the user is moving the view (or may be) */
+const USER_INPUT_EVENTS = [
+  "pointerdown",
+  "pointermove",
+  "wheel",
+  "keydown",
+  "gesturestart",
+  "gesturechange",
+] as const;
+
+/** drawing a stroke or shape, or moving/resizing something */
+const isBusy = (
+  appState: Pick<
+    AppState,
+    "newElement" | "resizingElement" | "selectedElementsAreBeingDragged"
+  >,
+) =>
+  !!appState.newElement ||
+  !!appState.resizingElement ||
+  appState.selectedElementsAreBeingDragged;
+
+const sizeOf = (appState: Pick<AppState, "width" | "height">): Size => ({
+  width: appState.width,
+  height: appState.height,
+});
 
 const isSyncableElement = (element: OrderedExcalidrawElement) => {
   if (element.isDeleted) {
@@ -246,6 +312,26 @@ export class PaperSession {
   private idleTimer: number | null = null;
   private isIdle = false;
 
+  /** sharing the view (see viewSync.ts) */
+  private readonly sharedArea = new SharedArea();
+  private readonly viewTracker = new SharedViewTracker();
+  private readonly animator = new ViewAnimator(() => this.api);
+  /** what others see, by socket (for "where others are looking") */
+  private remoteViewBoxes = new Map<
+    string,
+    { pageId: string; bounds: SceneBounds }
+  >();
+  readonly viewBoxes = new ViewBoxes(() => this.api);
+  /** people on this page, to send our view to newcomers */
+  private samePagePeople = new Set<string>();
+  private lastSize: Size | null = null;
+  private lastInputAt = 0;
+  /** someone moved the shared view while we were drawing (see
+   * `showSharedView`) */
+  private heldSharedView: SharedView | null = null;
+  /** a mode we chose, until the server confirms it (see `setViewSync`) */
+  private changingViewSync: ViewSync | null = null;
+
   readonly files: FileSync;
 
   private state: SessionState = {
@@ -263,6 +349,8 @@ export class PaperSession {
     removedReason: null,
     isGuest: false,
     presenter: null,
+    viewDetached: false,
+    showViewBoxes: false,
   };
   /** the user stopped following the current presenter themselves */
   private presenterOptOut = false;
@@ -438,11 +526,23 @@ export class PaperSession {
       if (this.state.userToFollow?.socketId !== socketId) {
         return;
       }
-      this.goToPage(pageId, bounds);
+      this.goToPage(pageId, bounds, VIEW_GLIDE_MS);
+    });
+    socket.on("paper:view", (view) => {
+      const show = this.viewTracker.received(view);
+      if (show) {
+        this.showSharedView(show, VIEW_GLIDE_MS);
+      }
+    });
+    socket.on("paper:viewbox", ({ socketId, pageId, bounds }) => {
+      this.remoteViewBoxes.set(socketId, { pageId, bounds });
+      this.refreshViewBoxes();
     });
     socket.on("paper:summon", ({ pageId, bounds, by }) => {
       const index = this.state.pages.findIndex((page) => page.id === pageId);
-      this.goToPage(pageId, bounds);
+      // everyone comes back, also those looking around on their own
+      this.setState({ viewDetached: false });
+      this.goToPage(pageId, bounds, VIEW_JUMP_MS);
       if (index >= 0) {
         this.toast(
           `${by} brought everyone to ${getPageLabel(
@@ -453,9 +553,15 @@ export class PaperSession {
       }
     });
     // whether we may still draw arrives with the presence update after this
-    socket.on("paper:settings", ({ locked, title }) => {
-      if (this.state.paper) {
-        this.setState({ paper: { ...this.state.paper, locked, title } });
+    socket.on("paper:settings", ({ locked, title, viewSync }) => {
+      const paper = this.state.paper;
+      if (paper) {
+        // older servers don't send it
+        const mode = viewSync ?? paper.viewSync;
+        this.setState({ paper: { ...paper, locked, title, viewSync: mode } });
+        if (mode !== paper.viewSync) {
+          this.onViewSyncChange(mode);
+        }
       }
     });
     socket.on("paper:presenter", ({ presenter }) =>
@@ -470,6 +576,13 @@ export class PaperSession {
     document.addEventListener("pointermove", this.onActivity, {
       passive: true,
     });
+    // what the user does (vs. views set by the app), see `isUserMoving`
+    for (const type of USER_INPUT_EVENTS) {
+      window.addEventListener(type, this.onUserInput, {
+        capture: true,
+        passive: true,
+      });
+    }
   }
 
   destroy() {
@@ -483,6 +596,13 @@ export class PaperSession {
     this.contentListeners.clear();
     document.removeEventListener("visibilitychange", this.onVisibilityChange);
     document.removeEventListener("pointermove", this.onActivity);
+    for (const type of USER_INPUT_EVENTS) {
+      window.removeEventListener(type, this.onUserInput, { capture: true });
+    }
+    this.shareViewSoon.cancel();
+    this.sendViewBoxSoon.cancel();
+    this.animator.stop();
+    this.viewBoxes.unmount();
     if (this.idleTimer) {
       window.clearTimeout(this.idleTimer);
     }
@@ -554,6 +674,10 @@ export class PaperSession {
       canEdit: data.canEdit,
       isGuest: data.isGuest,
     });
+    this.viewTracker.reset(data.sharedView ?? null);
+    this.setState({
+      showViewBoxes: getViewBoxesPreference() ?? data.canManage,
+    });
     this.setPresence(data.presence);
     this.applyPresenter(data.presenter);
     if (currentPageId) {
@@ -591,8 +715,11 @@ export class PaperSession {
       paper: data.paper,
       canEdit: data.canEdit,
     });
+    // our moves on their way when the connection dropped are lost
+    this.viewTracker.reset(data.sharedView ?? null);
     this.setPresence(data.presence);
     this.applyPresenter(data.presenter);
+    this.joinSharedView(VIEW_JUMP_MS);
 
     if (offlinePages.length && this.state.canEdit) {
       socket.emit("paper:pages", { pages: offlinePages });
@@ -633,18 +760,22 @@ export class PaperSession {
     this.updateCollaborators();
     this.files.sync(api.getSceneElementsIncludingDeleted());
 
-    const relay = throttle(() => this.relayViewport(), 100);
+    // the view the editor starts with isn't a move of the user's
+    this.animator.expect(viewOf(api.getAppState()));
+    this.lastSize = sizeOf(api.getAppState());
     this.apiUnsubscribers.push(
       api.onScrollChange(() => {
         if (this.followers.length) {
-          relay();
+          this.relayViewportSoon();
         }
         if (this.liveStrokes.size) {
           this.liveStrokes.scheduleRender();
         }
+        this.viewBoxes.scheduleRender();
+        this.onViewChange();
       }),
       api.onUserFollow((payload) => this.onUserFollow(payload)),
-      () => relay.cancel(),
+      () => this.relayViewportSoon.cancel(),
     );
     // ask whoever we follow (e.g. the presenter) for their current view, as
     // it may have been sent before the editor was ready
@@ -655,9 +786,14 @@ export class PaperSession {
         action: "FOLLOW",
       });
     }
+    this.joinSharedView(0);
+    this.updateSamePagePeople();
+    this.sendViewBox();
+    this.refreshViewBoxes();
   };
 
   private detach() {
+    this.animator.stop();
     for (const unsubscribe of this.apiUnsubscribers) {
       unsubscribe();
     }
@@ -788,11 +924,18 @@ export class PaperSession {
   /** called by the editor on every change */
   onEditorChange = (
     elements: Elements,
-    _appState: AppState,
+    appState: AppState,
     _files: BinaryFiles,
   ) => {
     if (!this.api || !this.state.currentPageId) {
       return;
+    }
+    this.checkResize(appState);
+    // a stroke ended: show the move that waited for it
+    if (this.heldSharedView && !isBusy(appState)) {
+      const held = this.heldSharedView;
+      this.heldSharedView = null;
+      this.showSharedView(held, VIEW_JUMP_MS);
     }
     const version = getSceneVersion(elements);
     if (version === this.lastSceneVersion) {
@@ -1142,7 +1285,7 @@ export class PaperSession {
       const next =
         live.find((page) => deleted && page.index > deleted.index) ??
         live[live.length - 1];
-      this.switchPage(next.id);
+      this.switchPage(next.id, "auto");
       this.toast("The page you were on was deleted");
     }
   }
@@ -1284,37 +1427,48 @@ export class PaperSession {
     );
   }
 
-  /** switches page, optionally fitting `bounds` into view */
-  goToPage(pageId: string, bounds?: SceneBounds | null) {
-    if (!this.pageMetas.get(pageId) || this.pageMetas.get(pageId)!.isDeleted) {
+  /** switches page (following someone), fitting `bounds` into view;
+   * on the same page the view glides there over `glideMs` */
+  goToPage(pageId: string, bounds?: SceneBounds | null, glideMs = 0) {
+    const page = this.pageMetas.get(pageId);
+    if (!page || page.isDeleted) {
       return;
     }
-    this.switchPage(pageId);
+    const samePage = pageId === this.state.currentPageId;
+    this.switchPage(pageId, "remote");
     if (bounds && this.api) {
-      this.api.updateScene({
-        appState: zoomToFitBounds({
-          appState: this.api.getAppState(),
-          bounds: bounds as [number, number, number, number],
-          fit: "contain",
-        }).appState,
-      });
+      this.animator.go(
+        fitView(bounds, sizeOf(this.api.getAppState())),
+        samePage ? glideMs : 0,
+      );
     }
   }
 
-  switchPage(pageId: string) {
+  /**
+   * switches page. `origin`: "local" — the user did it (everyone follows
+   * when the view is shared), "remote" — following someone or the shared
+   * view, "auto" — e.g. the page we were on was deleted.
+   */
+  switchPage(pageId: string, origin: "local" | "remote" | "auto" = "local") {
     const api = this.api;
     const current = this.state.currentPageId;
     if (!api || pageId === current || !this.pageMetas.has(pageId)) {
       return;
+    }
+    // people who can't draw follow the shared view: turning the page
+    // themselves means looking around on their own
+    if (origin === "local" && this.isOnSharedView() && !this.state.canEdit) {
+      this.lookAround();
     }
     // make sure the last strokes of the page we leave are sent, and what
     // others just did is in
     this.sendNow();
     this.applyPendingRemote();
     this.commitLiveStrokes();
+    this.animator.stop();
 
+    const appState = api.getAppState();
     if (current) {
-      const appState = api.getAppState();
       this.pageElements.set(current, api.getSceneElementsIncludingDeleted());
       this.viewports.set(current, {
         scrollX: appState.scrollX,
@@ -1328,45 +1482,51 @@ export class PaperSession {
     this.setState({ currentPageId: pageId });
     this.lastSceneVersion = getSceneVersion(elements);
 
-    const viewport = this.viewports.get(pageId);
+    // the view of the page: where we left it, or all of it the first time.
+    // Worked out here: the editor applies it a little later, so its state
+    // still has the old page's view for now.
+    const saved = this.viewports.get(pageId);
+    let view: View = saved
+      ? viewOf(saved)
+      : { scrollX: 0, scrollY: 0, zoom: 1 };
+    const visible = elements.filter((element) => !element.isDeleted);
+    if (!saved && visible.length) {
+      view = viewOf(
+        zoomToFitBounds({
+          appState: { ...appState, ...toAppState(view) },
+          bounds: getCommonBounds(visible),
+          fit: "scale-down",
+          // keep clear of the toolbars & sidebar
+          canvasOffsets: api.getViewportOffsets(),
+        }).appState,
+      );
+    }
+    // not `api.setViewport()`: the editor treats that as taking over the
+    // view and would stop following the presenter
+    this.animator.expect(view);
     api.updateScene({
       elements,
       appState: {
         selectedElementIds: {},
         selectedGroupIds: {},
         editingGroupId: null,
-        ...(viewport ?? {
-          scrollX: 0,
-          scrollY: 0,
-          zoom: { value: 1 as NormalizedZoomValue },
-        }),
+        ...toAppState(view),
       },
       captureUpdate: CaptureUpdateAction.NEVER,
     });
     // undo/redo is per page
     api.history.clear();
 
-    if (!viewport) {
-      const visible = elements.filter((element) => !element.isDeleted);
-      if (visible.length) {
-        // not `api.setViewport()`: the editor treats that as taking over the
-        // view and would stop following the presenter
-        api.updateScene({
-          appState: zoomToFitBounds({
-            appState: api.getAppState(),
-            bounds: getCommonBounds(visible),
-            fit: "scale-down",
-            // keep clear of the toolbars & sidebar
-            canvasOffsets: api.getViewportOffsets(),
-          }).appState,
-        });
-      }
-    }
-
     this.updateCollaborators();
     this.files.sync(elements);
     this.socket?.emit("paper:presence", { pageId });
-    this.relayViewport();
+    this.relayViewport(view);
+    this.updateSamePagePeople();
+    this.sendViewBox(view);
+    this.refreshViewBoxes();
+    if (origin === "local") {
+      this.shareView(view);
+    }
     this.opts.onPageChange?.(pageId);
   }
 
@@ -1394,6 +1554,16 @@ export class PaperSession {
         this.idleStates.delete(socketId);
       }
     }
+    for (const socketId of this.remoteViewBoxes.keys()) {
+      if (!socketIds.has(socketId)) {
+        this.remoteViewBoxes.delete(socketId);
+      }
+    }
+    // someone came to this page: they need to know what we see
+    if (this.updateSamePagePeople()) {
+      this.sendViewBox();
+    }
+    this.refreshViewBoxes();
     // stop following someone who left
     const followed = this.state.userToFollow;
     if (followed && !socketIds.has(followed.socketId)) {
@@ -1497,6 +1667,18 @@ export class PaperSession {
         this.presenterOptOut = true;
       }
     }
+    if (
+      payload.action === "FOLLOW" &&
+      presenter?.socketId === payload.userToFollow.socketId
+    ) {
+      this.presenterOptOut = false;
+    }
+    // following someone while everyone shares the view: you're looking
+    // around on your own (until "Back to shared view")
+    if (payload.action === "FOLLOW" && this.isViewShared()) {
+      this.shareViewSoon.cancel();
+      this.setState({ viewDetached: true });
+    }
     if (payload.action === "FOLLOW") {
       if (prev && prev.socketId !== payload.userToFollow.socketId) {
         this.socket?.emit("paper:follow", {
@@ -1515,7 +1697,7 @@ export class PaperSession {
   }
 
   /** start/stop following a user (e.g. from the pages panel) */
-  follow(user: PresenceUser | null) {
+  follow(user: Pick<PresenceUser, "socketId" | "username"> | null) {
     const prev = this.state.userToFollow;
     if (!user) {
       if (prev) {
@@ -1532,21 +1714,31 @@ export class PaperSession {
     });
   }
 
-  private relayViewport() {
+  /** tells those who follow us what we see (`view`: when the editor
+   * hasn't applied it yet) */
+  private relayViewport(view?: View) {
     const pageId = this.state.currentPageId;
     if (!this.followers.length || !this.api || !pageId) {
       return;
     }
+    const appState = this.api.getAppState();
     this.socket?.emit("paper:viewport", {
       pageId,
-      bounds: getVisibleSceneBounds(this.api.getAppState()) as SceneBounds,
+      bounds: visibleBounds(view ?? viewOf(appState), sizeOf(appState)),
     });
   }
+
+  private relayViewportSoon = throttle(
+    () => this.relayViewport(),
+    VIEW_SEND_INTERVAL_MS,
+  );
 
   private applyPresenter(presenter: Presenter | null) {
     const prev = this.state.presenter;
     if (prev?.socketId !== presenter?.socketId) {
       this.presenterOptOut = false;
+      // a presentation starts or ends: everyone together again
+      this.setState({ viewDetached: false });
     }
     this.setState({ presenter });
     const following = this.state.userToFollow;
@@ -1568,8 +1760,14 @@ export class PaperSession {
 
   /** presenter mode: everyone follows your view and page */
   setPresenting(on: boolean) {
-    if (this.state.canManage) {
-      this.socket?.emit("paper:present", { on });
+    if (!this.state.canManage) {
+      return;
+    }
+    this.socket?.emit("paper:present", { on });
+    // when the view is shared, everyone carries on from where we are
+    if (!on && this.viewSync !== "free") {
+      this.sharedArea.reset();
+      this.shareView(undefined, { force: true });
     }
   }
 
@@ -1583,6 +1781,339 @@ export class PaperSession {
       pageId,
       bounds: getVisibleSceneBounds(this.api.getAppState()) as SceneBounds,
     });
+    // and the shared view is ours, with us on it
+    if (this.isViewShared()) {
+      if (this.state.userToFollow) {
+        this.follow(null);
+      }
+      this.setState({ viewDetached: false });
+      this.sharedArea.reset();
+      this.shareView();
+    }
+  }
+
+  // ---------------------------------------------------------------------------
+  // sharing the view (see viewSync.ts)
+  // ---------------------------------------------------------------------------
+
+  private get viewSync(): ViewSync {
+    return this.state.paper?.viewSync ?? "free";
+  }
+
+  /** the view is shared right now (a presentation takes over meanwhile) */
+  private isViewShared() {
+    return this.viewSync !== "free" && !this.state.presenter;
+  }
+
+  /** this screen shows the shared view */
+  isOnSharedView() {
+    return (
+      this.isViewShared() &&
+      !this.state.viewDetached &&
+      !this.state.userToFollow
+    );
+  }
+
+  private onUserInput = (event: Event) => {
+    // a pen hovering doesn't move anything
+    if (event.type === "pointermove" && !(event as PointerEvent).buttons) {
+      return;
+    }
+    this.lastInputAt = performance.now();
+  };
+
+  /** whether the view moving now is the user's doing: they touched,
+   * clicked, scrolled or typed just now (the app moves it too, e.g. when
+   * the editor starts) */
+  private isUserMoving() {
+    return performance.now() - this.lastInputAt < USER_INPUT_WINDOW_MS;
+  }
+
+  /** the editor's view moved (pan or zoom) */
+  private onViewChange() {
+    const api = this.api;
+    if (!api) {
+      return;
+    }
+    this.sendViewBoxSoon();
+    if (this.animator.isExpected(viewOf(api.getAppState()))) {
+      // a view we set (someone else's move) being applied
+      return;
+    }
+    // the user took over
+    this.animator.stop();
+    if (
+      !this.isOnSharedView() ||
+      this.viewSync !== "view" ||
+      !this.isUserMoving()
+    ) {
+      return;
+    }
+    if (this.state.canEdit) {
+      this.shareViewSoon();
+    } else {
+      // people who can't draw follow the view; moving it themselves means
+      // looking around on their own
+      this.lookAround();
+    }
+  }
+
+  /**
+   * sends our view as everyone's (`view`: when the editor hasn't applied it
+   * yet). `force`: also when we aren't on the shared view yet (we just
+   * turned sharing on, stopped presenting…); `mode`: before the server
+   * confirmed it
+   */
+  private shareView(
+    view?: View,
+    opts: { mode?: ViewSync; force?: boolean } = {},
+  ) {
+    const api = this.api;
+    const socket = this.socket;
+    const pageId = this.state.currentPageId;
+    const socketId = this.state.socketId;
+    const mode = opts.mode ?? this.viewSync;
+    if (
+      !api ||
+      !socket?.connected ||
+      !pageId ||
+      !socketId ||
+      !this.state.canEdit ||
+      mode === "free" ||
+      (!opts.force && !this.isOnSharedView()) ||
+      // showing someone else's move
+      this.animator.isAnimating
+    ) {
+      return;
+    }
+    const appState = api.getAppState();
+    const bounds =
+      mode === "view"
+        ? this.sharedArea.boundsIn(view ?? viewOf(appState), sizeOf(appState))
+        : null;
+    this.viewTracker.sent({ pageId, bounds, socketId });
+    socket.emit("paper:view", { pageId, bounds }, ({ seq }) => {
+      const show = this.viewTracker.acked(seq);
+      if (show) {
+        this.showSharedView(show, VIEW_GLIDE_MS);
+      }
+    });
+  }
+
+  private shareViewSoon = throttle(
+    () => this.shareView(),
+    VIEW_SEND_INTERVAL_MS,
+  );
+
+  /** shows the shared view: someone moved it, or we come back to it */
+  private showSharedView(view: SharedView, glideMs: number) {
+    const api = this.api;
+    const page = this.pageMetas.get(view.pageId);
+    if (!api || !page || page.isDeleted || !this.isOnSharedView()) {
+      return;
+    }
+    // what we were about to send is older
+    this.shareViewSoon.cancel();
+    // in the middle of a stroke (or moving something), the page mustn't
+    // slide away under the pen: the move waits until it's done
+    if (isBusy(api.getAppState())) {
+      this.heldSharedView = view;
+      return;
+    }
+    this.heldSharedView = null;
+    const samePage = view.pageId === this.state.currentPageId;
+    if (!samePage) {
+      this.switchPage(view.pageId, "remote");
+    }
+    if (this.viewSync === "view" && view.bounds) {
+      this.animator.go(
+        this.sharedArea.show(view.bounds, sizeOf(api.getAppState())),
+        samePage ? glideMs : 0,
+      );
+    }
+  }
+
+  /** (back) to the shared view; the first one here shares theirs */
+  private joinSharedView(glideMs: number) {
+    if (!this.api || !this.isOnSharedView()) {
+      return;
+    }
+    const latest = this.viewTracker.latest;
+    const page = latest && this.pageMetas.get(latest.pageId);
+    if (latest && page && !page.isDeleted) {
+      this.showSharedView(latest, glideMs);
+    } else if (this.state.canEdit) {
+      this.sharedArea.reset();
+      this.shareView();
+    }
+  }
+
+  private onViewSyncChange(mode: ViewSync) {
+    this.sharedArea.reset();
+    this.setState({ viewDetached: false });
+    if (mode === "free") {
+      this.viewTracker.reset(null);
+    }
+    // the one who changed it already shared their view (`setViewSync`);
+    // everyone else is told, and gets that view right after
+    if (this.changingViewSync === mode) {
+      this.changingViewSync = null;
+      return;
+    }
+    this.toast(
+      mode === "view"
+        ? "Everyone now sees the same view — when anyone moves it, it moves for everyone"
+        : mode === "page"
+        ? "Everyone now turns pages together"
+        : "Everyone moves around on their own again",
+    );
+  }
+
+  /** managers: how the view is shared (see `ViewSync`); presenting stops */
+  setViewSync(mode: ViewSync) {
+    const socket = this.socket;
+    if (!this.state.canManage || !socket?.connected) {
+      return;
+    }
+    if (this.state.presenter?.socketId === this.state.socketId) {
+      socket.emit("paper:present", { on: false });
+    }
+    if (mode !== this.viewSync) {
+      this.changingViewSync = mode;
+      socket.emit("paper:viewSync", { mode });
+    }
+    if (mode !== "free") {
+      // everyone starts from what we see
+      if (this.state.userToFollow) {
+        this.follow(null);
+      }
+      this.setState({ viewDetached: false });
+      this.sharedArea.reset();
+      this.shareView(undefined, { mode, force: true });
+    }
+  }
+
+  /** while the view is shared: look around on your own */
+  lookAround() {
+    if (!this.isViewShared() || this.state.viewDetached) {
+      return;
+    }
+    this.shareViewSoon.cancel();
+    this.setState({ viewDetached: true });
+  }
+
+  /** back to the shared view, or to the presenter */
+  rejoinSharedView() {
+    const presenter = this.state.presenter;
+    if (presenter && presenter.socketId !== this.state.socketId) {
+      this.follow({ socketId: presenter.socketId, username: presenter.name });
+      return;
+    }
+    if (this.state.userToFollow) {
+      this.follow(null);
+    }
+    this.setState({ viewDetached: false });
+    this.joinSharedView(VIEW_JUMP_MS);
+  }
+
+  /** "where others are looking", remembered on this device */
+  setShowViewBoxes(show: boolean) {
+    this.setState({ showViewBoxes: show });
+    try {
+      localStorage.setItem(VIEW_BOXES_KEY, String(show));
+    } catch {
+      // ignore
+    }
+    this.refreshViewBoxes();
+  }
+
+  private refreshViewBoxes() {
+    const pageId = this.state.currentPageId;
+    if (!this.state.showViewBoxes || !pageId) {
+      this.viewBoxes.set([]);
+      return;
+    }
+    const boxes = [];
+    for (const user of this.state.presence) {
+      const box = this.remoteViewBoxes.get(user.socketId);
+      if (
+        user.socketId !== this.state.socketId &&
+        user.pageId === pageId &&
+        box?.pageId === pageId
+      ) {
+        boxes.push({
+          socketId: user.socketId,
+          userId: user.userId,
+          name: user.username,
+          bounds: box.bounds,
+        });
+      }
+    }
+    this.viewBoxes.set(boxes);
+  }
+
+  /** who else is on this page; whether someone new came */
+  private updateSamePagePeople() {
+    const pageId = this.state.currentPageId;
+    const people = new Set(
+      this.state.presence
+        .filter(
+          (user) =>
+            pageId &&
+            user.pageId === pageId &&
+            user.socketId !== this.state.socketId,
+        )
+        .map((user) => user.socketId),
+    );
+    const newcomer = [...people].some(
+      (socketId) => !this.samePagePeople.has(socketId),
+    );
+    this.samePagePeople = people;
+    return newcomer;
+  }
+
+  /** tells the others on this page what we see (`view`: when the editor
+   * hasn't applied it yet) */
+  private sendViewBox(view?: View) {
+    const api = this.api;
+    const pageId = this.state.currentPageId;
+    if (
+      !api ||
+      !pageId ||
+      !this.socket?.connected ||
+      !this.samePagePeople.size
+    ) {
+      return;
+    }
+    const appState = api.getAppState();
+    this.socket.emit("paper:viewbox", {
+      pageId,
+      bounds: visibleBounds(view ?? viewOf(appState), sizeOf(appState)),
+    });
+  }
+
+  private sendViewBoxSoon = throttle(
+    () => this.sendViewBox(),
+    VIEW_BOX_INTERVAL_MS,
+  );
+
+  /** the canvas changed size (window, rotation, docked panel) */
+  private checkResize(appState: AppState) {
+    const size = sizeOf(appState);
+    const last = this.lastSize;
+    this.lastSize = size;
+    if (!last || (last.width === size.width && last.height === size.height)) {
+      return;
+    }
+    // the shared view fits in again (others don't move)
+    if (this.isOnSharedView() && this.viewSync === "view") {
+      this.animator.go(this.sharedArea.resize(viewOf(appState), last, size), 0);
+    }
+    if (this.followers.length) {
+      this.relayViewportSoon();
+    }
+    this.sendViewBoxSoon();
+    this.viewBoxes.scheduleRender();
   }
 
   setLocked(locked: boolean) {

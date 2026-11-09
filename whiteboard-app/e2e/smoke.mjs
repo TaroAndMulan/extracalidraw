@@ -341,8 +341,12 @@ const run = async () => {
     );
     await admin.click(".wb-pages-sidebar .sidebar__close");
 
-    // presenter mode
-    await admin.click("button.wb-pill--button:has-text('Present')");
+    // presenter mode ("Follow me" in the View menu)
+    const followMe = async () => {
+      await admin.click(".wb-topright .wb-viewmenu > button");
+      await admin.click(".wb-viewmenu__option:has-text('Follow me')");
+    };
+    await followMe();
     m = await until(maya, (s) => s.following !== null && s.page === a.page);
     check(
       "presenter mode: member follows",
@@ -357,7 +361,9 @@ const run = async () => {
       m.page === adminPage,
       JSON.stringify(m),
     );
-    await admin.click("button.wb-pill--button:has-text('Presenting')");
+    await followMe();
+    m = await until(maya, (s) => s.following === null);
+    check("presenter mode ends", m.following === null, JSON.stringify(m));
 
     // lock
     await admin.click("button.wb-pill--button:has-text('Lock')");

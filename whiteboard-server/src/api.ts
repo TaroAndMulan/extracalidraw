@@ -9,6 +9,7 @@ import {
   verifyPassword,
 } from "./auth";
 import { HttpError, Router, readBody, readJSON, sendJSON } from "./http";
+import { VIEW_SYNC_MODES } from "./protocol";
 import {
   canAccessPaper,
   canEditPaper,
@@ -19,7 +20,7 @@ import {
 import { IMAGE_MIME_RE, isValidId, randomId, toPublicUser } from "./store";
 
 import type { Config } from "./config";
-import type { Role } from "./protocol";
+import type { Role, ViewSync } from "./protocol";
 import type { PaperHub } from "./realtime";
 import type { Database, PaperRecord, PaperStorage, UserRecord } from "./store";
 import type { IncomingMessage, ServerResponse } from "node:http";
@@ -459,6 +460,7 @@ export const createApi = ({
       title?: unknown;
       memberIds?: unknown;
       locked?: unknown;
+      viewSync?: unknown;
     }>(ctx.req);
     const updates: Partial<PaperRecord> = {};
     if (body.title != null) {
@@ -469,6 +471,12 @@ export const createApi = ({
     }
     if (body.locked != null) {
       updates.locked = body.locked === true;
+    }
+    if (body.viewSync != null) {
+      if (!VIEW_SYNC_MODES.includes(body.viewSync as ViewSync)) {
+        throw new HttpError(400, "Invalid view mode");
+      }
+      updates.viewSync = body.viewSync as ViewSync;
     }
     const updated = db.updatePaper(paper.id, updates)!;
     hub.onPaperUpdated(updated);
@@ -500,6 +508,8 @@ export const createApi = ({
         body.memberIds != null
           ? validMemberIds(body.memberIds)
           : paper.memberIds,
+      // a copy of a lesson paper works the same way (e.g. "together")
+      viewSync: paper.viewSync,
     });
     db.updatePaper(copy.id, {
       pageCount: paper.pageCount,

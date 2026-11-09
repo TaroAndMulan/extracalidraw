@@ -6,7 +6,8 @@ This fork adds a self-hosted, multi-user whiteboard built on the Excalidraw edit
 - **Worksheets & paper**: import a **PDF** (each page becomes a page) or images, or add **lined, grid or dotted** pages. The background is locked so everyone writes on top of it.
 - **Real-time collaboration**: everyone sees drawings, cursors, laser pointer and selections live. The pages panel shows who is on which page.
 - **Accounts**: you are the admin and create an account for each person. Papers are shared with the people you pick; they only see what's shared with them.
-- **Run the session**: _Present_ makes everyone follow your view and page while you teach, _Bring everyone here_ moves everybody to your page once, _Lock_ makes the paper view-only for everyone but you, and clicking a person's avatar follows their view (across pages).
+- **Share the view** (like Bitpaper): with _View → Together_ everyone sees the same page and the same part of it — whoever scrolls, zooms or turns the page moves it for everyone, on any screen size. Or _Same page_ (page turns are shared, zoom is everyone's own), _Follow me_ (everyone follows you while you teach) or _On their own_. Anyone can _look around on their own_ and come back with one tap, and you can see where the others are looking.
+- **Run the session**: _Bring everyone here_ moves everybody to your page once, _Lock_ makes the paper view-only for everyone but you, and clicking a person's avatar follows their view (across pages).
 - **Embed on other websites**: turn on a paper's public link and paste the `<iframe>` code into any page — visitors join live without an account.
 - **LaTeX math**: insert formulas (_∑ Math_ or <kbd>Alt</kbd>+<kbd>M</kbd>) with a live preview and buttons for common structures and symbols; double-click a formula to edit it.
 - **Colored words**: while editing a text, select part of it and pick a color — only those words change color.
@@ -21,19 +22,23 @@ Everything — accounts, papers, images — stays on your own server.
 
 ## Install on your VM (Docker)
 
-You need a Linux VM with [Docker](https://docs.docker.com/engine/install/) (including the Compose plugin), and ports **80** and **443** open.
+You need a Linux VM with [Docker](https://docs.docker.com/engine/install/) (including the Compose plugin), about 4 GB of free RAM for building the image (less: see [Little RAM?](#little-ram-build-the-image-elsewhere)), and ports **80** and **443** open — or an nginx that already serves them (see [below](#already-running-nginx-or-another-proxy)).
 
 ```bash
 git clone <your fork's URL> extracalidraw
 cd extracalidraw/deploy
 cp .env.example .env
 nano .env        # set DOMAIN and ADMIN_PASSWORD
+chmod 600 .env
 docker compose up -d --build
 ```
 
 Open `https://<DOMAIN>` and sign in as `admin` with your `ADMIN_PASSWORD`.
 
 The first build takes a few minutes (it compiles the app); restarts are instant.
+
+- A password with special characters (`$`, `!`, `@`, `#`, spaces) goes in **single quotes** in `.env`: `ADMIN_PASSWORD='p@ss$word!'`. Compose reads single-quoted values as they are.
+- **On the server, only change untracked files**: `deploy/.env` and `deploy/docker-compose.override.yml` (both git-ignored). If a tracked file such as `docker-compose.yml` is edited there, the next `git pull` stops.
 
 ### Try it on your computer first
 
@@ -42,7 +47,7 @@ The first build takes a few minutes (it compiles the app); restarts are instant.
 
 ### Domain or IP address?
 
-The app needs HTTPS: browsers only allow clipboard access, image hashing and embedding into other HTTPS sites from secure pages. Caddy (included) handles certificates for you:
+The app needs HTTPS: browsers only allow clipboard access, image hashing and embedding into other HTTPS sites from secure pages. Caddy (included) handles certificates for you (with your own nginx, certbot does — [below](#already-running-nginx-or-another-proxy)):
 
 | `DOMAIN` in `.env` | Result |
 | --- | --- |
@@ -53,20 +58,76 @@ The app needs HTTPS: browsers only allow clipboard access, image hashing and emb
 
 ### Already running nginx (or another proxy)?
 
-Skip Caddy: remove the `caddy` service from `deploy/docker-compose.yml`, publish the app port (`ports: ["127.0.0.1:3002:3002"]`) and proxy to it. WebSockets and the original `Host` header must be passed through:
+When nginx already serves other sites on ports 80/443, the app listens on the server only, nginx passes requests to it, and the bundled Caddy isn't started. Nothing that's already there is edited: the app gets an untracked override file, nginx a new site.
 
-```nginx
-location / {
-    proxy_pass http://127.0.0.1:3002;
-    proxy_http_version 1.1;
-    proxy_set_header Upgrade $http_upgrade;
-    proxy_set_header Connection "upgrade";
-    proxy_set_header Host $host;
-    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-    proxy_set_header X-Forwarded-Proto $scheme;
-    proxy_read_timeout 1h;
-    client_max_body_size 25m;
-}
+1. In `deploy/`, next to your `.env` (keep `DOMAIN` set — Compose still requires it):
+
+   ```bash
+   cp docker-compose.override.nginx.example.yml docker-compose.override.yml
+   docker compose config --services     # lists only: whiteboard
+   ```
+
+   Compose reads `docker-compose.override.yml` by itself. It publishes the app on `127.0.0.1:3002`, and `profiles: ["caddy"]` keeps Caddy off without touching `docker-compose.yml` (so `git pull` keeps working).
+
+2. Start the app and wait until it answers — before touching nginx:
+
+   ```bash
+   docker compose up -d --build
+   curl -s http://127.0.0.1:3002/api/health     # {"ok":true} (give it a few seconds)
+   ```
+
+3. Add a **new** nginx site from [`deploy/nginx.conf.example`](deploy/nginx.conf.example) (it passes WebSockets and the original `Host` header on, which the app needs):
+
+   ```bash
+   sudo cp nginx.conf.example /etc/nginx/sites-available/whiteboard
+   sudo nano /etc/nginx/sites-available/whiteboard       # server_name: your domain
+   sudo ln -s /etc/nginx/sites-available/whiteboard /etc/nginx/sites-enabled/
+   ```
+
+   No `sites-available`? Put it in `/etc/nginx/conf.d/whiteboard.conf` instead.
+
+4. Test the configuration, then **reload** (not restart — the other sites stay up):
+
+   ```bash
+   sudo nginx -t && sudo systemctl reload nginx
+   ```
+
+5. HTTPS with certbot. `--redirect` adds the http → https redirect without asking:
+
+   ```bash
+   sudo certbot --nginx -d <your domain> --redirect
+   ```
+
+   certbot adds the HTTPS part to the new site and renews the certificate by itself (`certbot.timer`).
+
+**Port 3002 taken?** Change only the left number in `docker-compose.override.yml` (`"127.0.0.1:3005:3002"`), and use the same port in nginx's `proxy_pass` (and as `DEPLOY_PORT` for the [deploy script](#updates)).
+
+Another proxy (Apache, Traefik, …)? Forward to `127.0.0.1:3002` and pass WebSocket upgrades, the `Host` header and `X-Forwarded-For`/`-Proto` on.
+
+### Check it works
+
+```bash
+docker compose ps                                # whiteboard: Up … (healthy)
+curl -sI https://<domain> | head -1              # … 200 (curl refuses an invalid certificate)
+curl -s https://<domain>/api/health              # {"ok":true}
+curl -sI http://<domain> | grep -i -E '^(HTTP|location)'   # 301 (Caddy: 308) to https://…
+curl -si --http1.1 --max-time 3 -H 'Connection: Upgrade' -H 'Upgrade: websocket' \
+  -H 'Sec-WebSocket-Version: 13' -H 'Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==' \
+  'https://<domain>/socket.io/?EIO=4&transport=websocket' | head -1   # expect 101
+```
+
+The last one is live collaboration: anything but `101 Switching Protocols` means the proxy doesn't pass WebSockets on. `deploy/deploy.sh --status` runs these checks from your computer ([Updates](#updates)).
+
+### Little RAM? Build the image elsewhere
+
+Building needs 3–4 GB of free RAM (the build gets killed otherwise). On a smaller server, build on your computer and send the image over — `deploy/deploy.sh --ship-image` does all of it, or by hand:
+
+```bash
+# on your computer, in the repository (Apple Silicon too: the build stage runs natively)
+docker buildx build --platform linux/amd64 -f whiteboard-server/Dockerfile -t extracalidraw-whiteboard --load .
+docker save extracalidraw-whiteboard | gzip | ssh <server> 'gunzip | docker load'
+# on the server
+cd ~/extracalidraw && git pull && cd deploy && docker compose up -d --no-build
 ```
 
 ---
@@ -76,19 +137,30 @@ location / {
 1. **Add people** — _People_ → _Add person_, or _Add many…_ to paste a list of names (one per line) and get usernames and passwords for everyone (copy or download as CSV). Admins can reset passwords, disable or delete accounts any time.
 2. **Create a paper** — _Papers_ → _New paper_, pick who it's shared with. `⋯` on a paper lets you rename it, change who it's shared with, set up the public link/embed, duplicate it (great for reusable worksheets/templates) or delete it.
 3. **Pages** — the page bar at the bottom (`‹ Page 2 / 5 › +`) and the _Pages_ panel (top right; pin it to keep it open). _New page ▾_ offers blank, lined, grid and dotted paper, and **Import PDF or images…** (or drop a PDF onto the canvas). Imported backgrounds are locked; right-click → _Unlock_ to move them. Everyone who can draw may add, rename and reorder pages; only the owner and admins delete them.
-4. **Run a session** — top right, and always in the _Pages_ panel: _Present_ (everyone follows your view and page until you stop; anyone can step out with ✕ on the “… is presenting” badge) and _Lock_ (view-only for everyone else); in the _Pages_ panel also _Bring everyone here_. Click someone's avatar to follow them. On smaller screens the top-right buttons shrink to icons, then make way (Present/Lock stay in the _Pages_ panel, Math and Library in the menu ☰, the page bar opens the _Pages_ panel).
-5. **Math** — _∑ Math_ (top right), <kbd>Alt</kbd>+<kbd>M</kbd> or menu → _Insert math (LaTeX)_. Type LaTeX (e.g. `\frac{a}{b}`, `x^2`, `\sqrt{x}`) or use the buttons, pick a color and size, then _Insert_ (<kbd>Ctrl</kbd>+<kbd>Enter</kbd>). Double-click a formula (or select it and press <kbd>Enter</kbd>) to change it. Chemistry works too: `\ce{H2O}`.
-6. **Color part of a text** — double-click a text to edit it, select the words, then click a color in the panel on the left. Picking the text's own color removes the coloring. New text you type continues the color of the character before it.
-7. **Print / PDF** — menu (☰) → _Print / PDF (all pages)_; choose “Save as PDF” in the print dialog.
-8. **Pen bar** — at the bottom, next to the page bar: black, red, blue and green pens, a **highlighter** (wide, see-through yellow) and the **eraser**, one tap each. On narrow screens it shows fewer colors (the full palette is in the panel on the left).
-9. **Tablets & pens** — as soon as a pen touches (or hovers over) the screen, the whiteboard switches to _pen mode_:
+4. **Run a session** — top right, and always in the _Pages_ panel: _View_ (see below) and _Lock_ (view-only for everyone else); in the _Pages_ panel also _Bring everyone here_. Click someone's avatar to follow them. On smaller screens the top-right buttons shrink to icons, then make way (View/Lock stay in the _Pages_ panel, Math and Library in the menu ☰, the page bar opens the _Pages_ panel).
+5. **View — how everyone's view is shared.** The owner and admins choose, in _View_ (top right or _Pages_ panel); it's kept with the paper (and its copies), so a tutoring paper can always open in _Together_:
 
-   - the **pen** draws, selects, erases — everything a mouse does (double-tap a text or formula with the pen to edit it); hold it still for half a second with the selection tool for the menu (copy, paste, _Unlock_…);
-   - **one finger** moves the page, **two fingers** pinch to zoom; fingers never draw or select on the canvas, but work as usual on buttons and panels. A finger held still with the selection tool also opens the menu;
-   - **tap with two fingers to undo, with three to redo**;
-   - your **palm** can rest on the screen while you write: touches while the pen is down (and just after it lifts) are ignored, so the stroke isn't cut and the page doesn't slide.
+   | Mode | What happens |
+   | --- | --- |
+   | _On their own_ (default) | everyone scrolls, zooms and turns pages on their own |
+   | _Same page_ | when someone turns the page, everyone does; zoom and scrolling stay everyone's own — good for a class reading a worksheet on small tablets |
+   | _Together_ | one view for everyone, as in Bitpaper: whoever scrolls, zooms (fingers, mouse, trackpad) or turns the page moves it for everyone. Screens of any shape show at least the same area; someone joining later starts there; if someone moves it while you're writing, your page waits until you lift the pen |
+   | _Follow me_ | everyone follows your page and view; only you move it (presenting). Choosing another mode ends it — in _Together_ or _Same page_, everyone carries on from where you are |
 
-   The hand button at the end of the pen bar (it appears once a pen was used) lets fingers draw too, and turns pen mode back on; the pen button in Excalidraw's toolbar does the same. The choice is remembered on that device, so the next lesson starts in the same mode. Tablets without a pen (e.g. a student's tablet) simply draw with a finger. While someone else is in the paper, the screen doesn't dim or lock (needs HTTPS). Menu (☰) → _Full screen_ hides the browser's bars. Made for Safari on iPad and Chrome or Samsung Internet on Android. Pages can be reordered on a tablet with `⋯` → _Move up / Move down_ in the _Pages_ panel.
+   People who can't draw (a locked paper, a view-only link) follow the shared view but don't move it. For yourself, in _View_: **Look around on my own** (the others aren't moved, and nothing moves you) — **Back to the shared view** (or the badge at the bottom) brings you back; moving the view when you can't draw, or following someone, does the same. **Show where others are looking** outlines what each person on your page sees, in the color of their cursor; someone looking elsewhere gets a name at the edge of the screen, pointing their way. It's on for the owner and admins, off for everyone else, and remembered on each device. _Bring everyone here_ also brings back those looking around.
+
+6. **Math** — _∑ Math_ (top right), <kbd>Alt</kbd>+<kbd>M</kbd> or menu → _Insert math (LaTeX)_. Type LaTeX (e.g. `\frac{a}{b}`, `x^2`, `\sqrt{x}`) or use the buttons, pick a color and size, then _Insert_ (<kbd>Ctrl</kbd>+<kbd>Enter</kbd>). Double-click a formula (or select it and press <kbd>Enter</kbd>) to change it. Chemistry works too: `\ce{H2O}`.
+7. **Color part of a text** — double-click a text to edit it, select the words, then click a color in the panel on the left. Picking the text's own color removes the coloring. New text you type continues the color of the character before it.
+8. **Print / PDF** — menu (☰) → _Print / PDF (all pages)_; choose “Save as PDF” in the print dialog.
+9. **Pen bar** — at the bottom, next to the page bar: black, red, blue and green pens, a **highlighter** (wide, see-through yellow) and the **eraser**, one tap each. On narrow screens it shows fewer colors (the full palette is in the panel on the left).
+10. **Tablets & pens** — as soon as a pen touches (or hovers over) the screen, the whiteboard switches to _pen mode_:
+
+- the **pen** draws, selects, erases — everything a mouse does (double-tap a text or formula with the pen to edit it); hold it still for half a second with the selection tool for the menu (copy, paste, _Unlock_…);
+- **one finger** moves the page, **two fingers** pinch to zoom; fingers never draw or select on the canvas, but work as usual on buttons and panels. A finger held still with the selection tool also opens the menu;
+- **tap with two fingers to undo, with three to redo**;
+- your **palm** can rest on the screen while you write: touches while the pen is down (and just after it lifts) are ignored, so the stroke isn't cut and the page doesn't slide.
+
+The hand button at the end of the pen bar (it appears once a pen was used) lets fingers draw too, and turns pen mode back on; the pen button in Excalidraw's toolbar does the same. The choice is remembered on that device, so the next lesson starts in the same mode. Tablets without a pen (e.g. a student's tablet) simply draw with a finger. While someone else is in the paper, the screen doesn't dim or lock (needs HTTPS). Menu (☰) → _Full screen_ hides the browser's bars. Made for Safari on iPad and Chrome or Samsung Internet on Android. Pages can be reordered on a tablet with `⋯` → _Move up / Move down_ in the _Pages_ panel.
 
 Each person's own preferences (theme, language, shape library) stay in their browser.
 
@@ -137,7 +209,7 @@ Set in `deploy/.env` (Docker) or as environment variables:
 
 | Variable | Default | Description |
 | --- | --- | --- |
-| `DOMAIN` | – | Domain or IP address Caddy serves (Docker setup only). |
+| `DOMAIN` | – | Domain or IP address Caddy serves (Docker setup only; keep it set behind your own nginx too, Compose requires it). |
 | `APP_NAME` | `Extracalidraw` | Name on the login page and the browser tab. |
 | `ADMIN_USERNAME` | `admin` | First admin account (created on the very first start). |
 | `ADMIN_PASSWORD` | random | Its password. When empty, a random password is printed in the logs. |
@@ -171,12 +243,44 @@ docker run --rm -v deploy_whiteboard-data:/data -v "$PWD":/backup alpine \
 docker compose start whiteboard
 ```
 
-Update to a newer version of your fork:
+**Daily backups** (optional): add a line with `crontab -e` on the server, as the user who runs Docker. Cron wants absolute paths and `%` written as `\%`; this one keeps 14 days:
+
+```cron
+30 3 * * * mkdir -p /home/you/whiteboard-backups && docker run --rm -v deploy_whiteboard-data:/data:ro -v /home/you/whiteboard-backups:/backup alpine tar czf /backup/whiteboard-$(date +\%F).tgz -C /data . && find /home/you/whiteboard-backups -name 'whiteboard-*.tgz' -mtime +14 -delete
+```
+
+Copy a backup off the server now and then (`scp`): one on the same disk doesn't survive losing the VM.
+
+### Updates
+
+On the server:
 
 ```bash
-git pull
-cd deploy && docker compose up -d --build
+cd ~/extracalidraw && git pull && cd deploy && docker compose up -d --build && docker image prune -f
 ```
+
+Data, accounts and settings stay; `docker image prune -f` removes the images the update replaced.
+
+**Or from your computer, in one command:** [`deploy/deploy.sh`](deploy/deploy.sh) does the same over ssh, with checks before and after. Once: copy `deploy/.deploy.env.example` to `deploy/.deploy.env` (git-ignored) and set `DEPLOY_HOST` (your ssh target) and `DEPLOY_URL`. Then commit, push `main`, and:
+
+```bash
+deploy/deploy.sh               # deploy what's on GitHub's main
+deploy/deploy.sh --status      # what runs there: commit, health, memory, disk (changes nothing)
+deploy/deploy.sh --dry-run     # run the checks, print what it would do
+deploy/deploy.sh --backup      # back up the data first (~/whiteboard-backups on the server)
+deploy/deploy.sh --rollback    # the new version misbehaves: run the previous image again
+deploy/deploy.sh --ship-image  # build here instead (servers with little RAM)
+```
+
+A deploy:
+
+1. checks this computer: on `main`, nothing uncommitted, everything pushed — the server pulls from GitHub, so anything else wouldn't be deployed;
+2. checks the server: ssh, Docker Compose, no tracked files changed there (`git pull` would stop), ~3.5 GB of free RAM for the build, free disk;
+3. keeps the running image as `extracalidraw-whiteboard:previous`, then runs `git pull --ff-only`, `docker compose up -d --build` and `docker image prune -f` (which only removes untagged images, so `:previous` stays);
+4. waits up to 2 minutes for `/api/health` — if the app doesn't come up, it prints its logs and suggests `--rollback`;
+5. checks from your computer, like a browser: the page and its certificate, `/api/health`, the WebSocket upgrade, http → https.
+
+It needs a key login (`ssh <host>` without a password prompt) and Docker without sudo for that user (the `docker` group). It never uses sudo, never removes volumes and never reads `.env`; setting up nginx and certbot stays a one-time step by hand ([above](#already-running-nginx-or-another-proxy)). `--rollback` only switches the image back: the server's checkout stays on the new commit, so push a fix (or a `git revert`) before deploying again, and data the new version wrote stays as it is.
 
 ---
 
@@ -207,14 +311,15 @@ On another port: `PORT=3005 npm run whiteboard:dev:server` and `VITE_APP_WHITEBO
 ## How it works
 
 ```
-browser ──HTTPS──▶ Caddy ──▶ whiteboard-server (Node.js, one process)
-                              ├─ REST API: login, people, papers, images
-                              ├─ Socket.IO: live pages, cursors, presence
-                              └─ serves whiteboard-app (the built React app)
+browser ──HTTPS──▶ Caddy or your own nginx ──▶ whiteboard-server (Node.js, one process)
+                                                ├─ REST API: login, people, papers, images
+                                                ├─ Socket.IO: live pages, cursors, presence
+                                                └─ serves whiteboard-app (the built React app)
 ```
 
 - `whiteboard-app/` — the React app: login, dashboard, people, and the editor (the Excalidraw package from `packages/`) with the pages UI.
 - `whiteboard-server/` — the server. Open papers are kept in memory; every change is merged with Excalidraw's rules (higher element version wins, ties broken deterministically), forwarded only to the others in the paper, and written to disk shortly after. Cursors go only to people on the same page. If a connection drops, edits are kept and sent when it's back.
+- Sharing the view (_Together_) sends the area of the page being looked at, not a screen position, so screens of different shapes show the same area without zooming out a little more every time someone else moves it; the server numbers each move, so two people moving at once end up in the same place. Others' moves glide instead of jumping.
 - Live updates go out at once (at most one message per screen frame): a stroke being drawn only sends its newest points, and when a connection is slow, changes are merged instead of queued. Images go over the live connection when small; big ones first send a small preview there and upload the full picture separately, so they never hold up drawing. `node whiteboard-app/e2e/latency.mjs` measures it (see the developer notes).
 - Passwords are hashed with scrypt, logins are rate-limited, sessions are `HttpOnly` cookies, and the API rejects cross-site requests.
 
@@ -224,6 +329,10 @@ browser ──HTTPS──▶ Caddy ──▶ whiteboard-server (Node.js, one pro
 - **Logged in, but papers won't open (“live connection was refused”)** — the proxy drops cookies or changes the `Host` header on WebSocket requests.
 - **Strokes arrive late for everyone** — it's the network: host the server close to you and your students (same country/region), as each stroke travels to the server and back out. The app itself adds only a few milliseconds.
 - **Browser warns about the certificate** — expected when `DOMAIN` is an IP address; use a domain name for a trusted certificate.
+- **`git pull` on the server stops ("local changes would be overwritten")** — a tracked file was edited there. Move the change into `deploy/.env` or `deploy/docker-compose.override.yml`, then `git checkout -- <file>`.
+- **`Bind for 127.0.0.1:3002 failed: port is already allocated`** — something else uses the port: see "Port 3002 taken?" under [nginx](#already-running-nginx-or-another-proxy).
+- **The build stops with `Killed` or exit code 137** — not enough RAM: see [Little RAM?](#little-ram-build-the-image-elsewhere).
+- **The admin password from `.env` doesn't work** — a `$` in an unquoted value is read as a variable: put the password in single quotes and reset it (see "Forgot the admin password?").
 - **An embed shows “refused to connect”** — the site isn't listed in `EMBED_ALLOWED_ORIGINS`, or the page isn't served over HTTPS.
 - **On a tablet, my finger doesn't draw** — pen mode is on (a pen was used on this device). Tap the hand button at the end of the pen bar to let fingers draw.
 - **On a tablet, the page doesn't move right after writing** — a finger touching within half a second after the pen lifts counts as the palm; lift and try again.

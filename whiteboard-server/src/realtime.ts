@@ -13,6 +13,7 @@ import {
   sanitizePatch,
   sortByIndex,
 } from "./reconcile";
+import { VIEW_SYNC_MODES } from "./protocol";
 import { IMAGE_MIME_RE, isValidId, randomId } from "./store";
 
 import type { Config } from "./config";
@@ -25,6 +26,7 @@ import type {
   PaperSummary,
   PresenceUser,
   SceneBounds,
+  SharedView,
   ServerToClientEvents,
   SyncedElement,
 } from "./protocol";
@@ -139,6 +141,11 @@ export class LivePaper {
   disposed = false;
   /** presenter mode: everyone follows this socket */
   presenter: Presenter | null = null;
+  /** the view everyone shares (`viewSync` "page"/"view") */
+  sharedView: SharedView | null = null;
+  /** orders moves of the shared view; starts at the clock so it keeps
+   * growing when the paper is unloaded and loaded again */
+  private viewSeq = Date.now();
 
   private dirtyPages = new Set<string>();
   private pagesDirty = false;
@@ -221,6 +228,12 @@ export class LivePaper {
 
   hasPage(pageId: string) {
     return this.pages.has(pageId);
+  }
+
+  /** moves the shared view */
+  setSharedView(socketId: string, pageId: string, bounds: SceneBounds | null) {
+    this.sharedView = { pageId, bounds, seq: ++this.viewSeq, socketId };
+    return this.sharedView;
   }
 
   /** returns the accepted elements, or `null` if the page doesn't exist */
@@ -392,7 +405,9 @@ const sanitizeBounds = (value: unknown): SceneBounds | null => {
   if (
     Array.isArray(value) &&
     value.length === 4 &&
-    value.every((n) => typeof n === "number" && Number.isFinite(n))
+    value.every((n) => typeof n === "number" && Number.isFinite(n)) &&
+    value[2] > value[0] &&
+    value[3] > value[1]
   ) {
     return value as unknown as SceneBounds;
   }
@@ -523,11 +538,17 @@ export class PaperHub {
     this.io.to(paperRoom(paperId)).emit("paper:fileStored", { fileId });
   }
 
-  /** title/lock/membership changed */
+  /** title/lock/view sharing/membership changed */
   onPaperUpdated(paper: PaperRecord) {
-    this.io
-      .to(paperRoom(paper.id))
-      .emit("paper:settings", { locked: paper.locked, title: paper.title });
+    const live = this.getIfLoaded(paper.id);
+    if (live && paper.viewSync === "free") {
+      live.sharedView = null;
+    }
+    this.io.to(paperRoom(paper.id)).emit("paper:settings", {
+      locked: paper.locked,
+      title: paper.title,
+      viewSync: paper.viewSync,
+    });
     this.revalidateSockets(paper.id);
     this.broadcastPresence(paper.id);
   }
@@ -801,6 +822,7 @@ export class PaperHub {
           canEdit: permissions.canEdit,
           isGuest: actor.kind === "guest",
           presenter: live.presenter,
+          sharedView: paper.viewSync === "free" ? null : live.sharedView,
         };
         ack({ ok: true, data: result });
         this.broadcastPresence(paper.id);
@@ -1070,6 +1092,65 @@ export class PaperHub {
         pageId: data.pageId,
         bounds,
       });
+    });
+
+    socket.on("paper:view", (data, ack) => {
+      const respond = (seq: number | null) => {
+        if (typeof ack === "function") {
+          ack({ seq });
+        }
+      };
+      const ctx = this.getContext(socket);
+      const pageId = data?.pageId;
+      const bounds = data?.bounds == null ? null : sanitizeBounds(data.bounds);
+      // only those who may draw move the view for everyone; the others
+      // follow it
+      if (
+        !ctx ||
+        !ctx.canEdit ||
+        ctx.paper.viewSync === "free" ||
+        !isValidId(pageId) ||
+        !ctx.live.pages.get(pageId) ||
+        ctx.live.pages.get(pageId)!.isDeleted ||
+        (data.bounds != null && !bounds)
+      ) {
+        respond(null);
+        return;
+      }
+      const view = ctx.live.setSharedView(socket.id, pageId, bounds);
+      socket
+        .to(paperRoom(ctx.paper.id))
+        .emit("paper:view", { ...view, by: ctx.name });
+      respond(view.seq);
+    });
+
+    socket.on("paper:viewbox", (data) => {
+      const { paperId, pageId } = socket.data;
+      const bounds = sanitizeBounds(data?.bounds);
+      if (!paperId || !pageId || data?.pageId !== pageId || !bounds) {
+        return;
+      }
+      // not volatile: the last one of a move must arrive (they're few)
+      socket
+        .to(pageRoom(paperId, pageId))
+        .emit("paper:viewbox", { socketId: socket.id, pageId, bounds });
+    });
+
+    socket.on("paper:viewSync", (data) => {
+      const ctx = this.getContext(socket);
+      const mode = data?.mode;
+      if (
+        !ctx ||
+        !ctx.canManage ||
+        !VIEW_SYNC_MODES.includes(mode) ||
+        ctx.paper.viewSync === mode
+      ) {
+        return;
+      }
+      const paper = this.db.updatePaper(ctx.paper.id, { viewSync: mode });
+      if (paper) {
+        this.onPaperUpdated(paper);
+      }
     });
 
     socket.on("paper:summon", (data) => {

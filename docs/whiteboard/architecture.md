@@ -1,10 +1,10 @@
 # Architecture
 
 ```
-browser ──HTTPS──▶ Caddy ──▶ whiteboard-server (one Node.js process)
-                              ├─ REST API (/api/*): auth, people, papers, images
-                              ├─ socket.io (/socket.io): live papers
-                              └─ static files: the built whiteboard-app
+browser ──HTTPS──▶ Caddy or your own nginx ──▶ whiteboard-server (one Node.js process)
+                                                ├─ REST API (/api/*): auth, people, papers, images
+                                                ├─ socket.io (/socket.io): live papers
+                                                └─ static files: the built whiteboard-app
 ```
 
 ## Server (`whiteboard-server/src`)
@@ -18,7 +18,7 @@ browser ──HTTPS──▶ Caddy ──▶ whiteboard-server (one Node.js proc
 | `auth.ts` | scrypt password hashing, session cookie helpers, login rate limiter, validation. |
 | `http.ts` | Tiny router, JSON/body helpers, `StaticFiles` (ETag, immutable caching of `/assets/*`, brotli/gzip files from the build — compressed on first request otherwise — cached in memory, framing headers). |
 | `api.ts` | REST endpoints, permission checks for users and guests (`X-Share-Token`). |
-| `realtime.ts` | `PaperHub` (socket.io handlers, presence, follow/presenter, lock, kicking) and `LivePaper` (in-memory state of an open paper, persistence). |
+| `realtime.ts` | `PaperHub` (socket.io handlers, presence, follow/presenter, shared view, lock, kicking) and `LivePaper` (in-memory state of an open paper, persistence). |
 | `reconcile.ts` | Pure merge logic: version rules, validation of untrusted elements/pages, ordering, tombstone pruning. |
 | `protocol.ts` | Types shared with the app (`import type` only): REST shapes and socket events. |
 
@@ -63,7 +63,9 @@ Keeping it small (decisions.md → "Storage and loading"):
 | `editor/liveStrokes.ts` | Others' strokes while they're drawn, on an overlay canvas; they go into the page once finished (protocol.md → "Strokes still being drawn"). |
 | `editor/tabletInput.ts` | Tablets: palm rejection, finger navigation, long press → context menu, two/three-finger tap → undo/redo, in front of the editor (window capture listeners); pen mode remembered per device. See decisions.md → "Pen, fingers and palms". |
 | `editor/PenTray.tsx` | The pen bar (pens, highlighter, eraser, "fingers draw" toggle) and `widenHighlighterStroke`. |
-| `editor/TopRight.tsx`, `fit.ts` | Math / Lock / Present / Pages at the top right, and `useFitLevel`, which makes the top bar and the footer (page bar + pens) more compact until they fit. |
+| `editor/TopRight.tsx`, `fit.ts` | Math / Lock / View / Pages at the top right, and `useFitLevel`, which makes the top bar and the footer (page bar + pens) more compact until they fit. |
+| `editor/viewSync.ts` | Sharing the view (protocol.md → "Sharing the view"): view ↔ page-area math, `SharedArea` (what's sent when you move the shared view), `SharedViewTracker` (orders moves of several people), `ViewAnimator` (others' moves glide; recognizes views it set, so they aren't taken for the user's). Used by `session.ts`. |
+| `editor/viewBoxes.ts`, `ViewMenu.tsx` | "Where others are looking" (frames over the page, name tags at the screen's edge), and the _View_ menu (modes, look around / come back, the frames toggle). |
 | `editor/device.ts` | Screen wake lock during lessons, full screen (incl. Safari's prefixed API). |
 | `editor/EmbedPage.tsx` | `/embed/<id>#token=…`: checks the link, asks guests for a name, opens the editor. |
 

@@ -1,0 +1,19 @@
+# For a server where nginx (or another proxy) already serves ports 80/443:
+# the app listens on this machine only, nginx passes requests to it, and the
+# bundled Caddy isn't started. Steps: WHITEBOARD.md → "Already running nginx".
+#
+#   cp docker-compose.override.nginx.example.yml docker-compose.override.yml
+#   docker compose config --services      # lists only: whiteboard
+#
+# Compose reads docker-compose.override.yml on its own. It's git-ignored, so
+# `git pull` keeps working — don't edit docker-compose.yml on the server.
+
+services:
+  whiteboard:
+    ports:
+      # Port taken? Change the left number only ("127.0.0.1:3005:3002") and
+      # use that port in nginx's proxy_pass.
+      - "127.0.0.1:3002:3002"
+  caddy:
+    # only started with `--profile caddy`, i.e. not at all: nginx does HTTPS
+    profiles: ["caddy"]
